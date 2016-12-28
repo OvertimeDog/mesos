@@ -51,6 +51,13 @@ constexpr Duration DEFAULT_REGISTRATION_BACKOFF_FACTOR = Seconds(1);
 // recovery and when it times out slave re-registration.
 constexpr Duration REGISTER_RETRY_INTERVAL_MAX = Minutes(1);
 
+// The maximum interval the slave waits before retrying authentication.
+constexpr Duration AUTHENTICATION_RETRY_INTERVAL_MAX = Minutes(1);
+
+// Default backoff interval used by the slave to wait after failed
+// authentication.
+constexpr Duration DEFAULT_AUTHENTICATION_BACKOFF_FACTOR = Seconds(1);
+
 constexpr Duration GC_DELAY = Weeks(1);
 constexpr Duration DISK_WATCH_INTERVAL = Minutes(1);
 
@@ -60,8 +67,9 @@ constexpr double GC_DISK_HEADROOM = 0.1;
 // Maximum number of completed frameworks to store in memory.
 constexpr size_t MAX_COMPLETED_FRAMEWORKS = 50;
 
-// Maximum number of completed executors per framework to store in memory.
-constexpr size_t MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK = 150;
+// Default maximum number of completed executors per framework
+// to store in memory.
+constexpr size_t DEFAULT_MAX_COMPLETED_EXECUTORS_PER_FRAMEWORK = 150;
 
 // Maximum number of completed tasks per executor to store in memory.
 constexpr size_t MAX_COMPLETED_TASKS_PER_EXECUTOR = 200;
@@ -117,11 +125,11 @@ constexpr char DEFAULT_AUTHENTICATEE[] = "crammd5";
 // Name of the default, local authorizer.
 constexpr char DEFAULT_AUTHORIZER[] = "local";
 
-// Name of the default HTTP authenticator.
-constexpr char DEFAULT_HTTP_AUTHENTICATOR[] = "basic";
+// Name of the agent HTTP authentication realm for read-only endpoints.
+constexpr char READONLY_HTTP_AUTHENTICATION_REALM[] = "mesos-agent-readonly";
 
-// Name of the default agent HTTP authentication realm.
-constexpr char DEFAULT_HTTP_AUTHENTICATION_REALM[] = "mesos-agent";
+// Name of the agent HTTP authentication realm for read-write endpoints.
+constexpr char READWRITE_HTTP_AUTHENTICATION_REALM[] = "mesos-agent-readwrite";
 
 // Default maximum storage space to be used by the fetcher cache.
 constexpr Bytes DEFAULT_FETCHER_CACHE_SIZE = Gigabytes(2);
@@ -129,6 +137,9 @@ constexpr Bytes DEFAULT_FETCHER_CACHE_SIZE = Gigabytes(2);
 // If no pings received within this timeout, then the slave will
 // trigger a re-detection of the master to cause a re-registration.
 Duration DEFAULT_MASTER_PING_TIMEOUT();
+
+// Name of the executable for default executor.
+constexpr char MESOS_DEFAULT_EXECUTOR[] = "mesos-default-executor";
 
 } // namespace slave {
 } // namespace internal {

@@ -49,37 +49,30 @@
     }
   }
 
+  // Set the task sandbox directory for use by the WebUI.
+  function setTaskSandbox(executor) {
+    _.each(
+        [executor.tasks, executor.queued_tasks, executor.completed_tasks],
+        function(tasks) {
+      _.each(tasks, function(task) {
+        if (executor.type === 'DEFAULT') {
+          task.directory = executor.directory + '/tasks/' + task.id;
+        } else {
+          task.directory = executor.directory;
+        };
+      });
+    });
+  }
+
 
   // Update the outermost scope with the new state.
-  function updateState($scope, $timeout, data) {
-    // Don't do anything if the data hasn't changed.
-    if ($scope.data == data) {
+  function updateState($scope, $timeout, state) {
+    // Don't do anything if the state hasn't changed.
+    if ($scope.state == state) {
       return true; // Continue polling.
     }
 
-    $scope.state = JSON.parse(data);
-
-    // Determine if there is a leader (and redirect if not the leader).
-    if ($scope.state.leader) {
-
-      // Redirect if we aren't the leader.
-      if ($scope.state.leader != $scope.state.pid) {
-        $scope.redirect = 6000;
-        $("#not-leader-alert").removeClass("hide");
-
-        var countdown = function() {
-          if ($scope.redirect == 0) {
-            // TODO(benh): Use '$window'.
-            window.location = '/master/redirect';
-          } else {
-            $scope.redirect = $scope.redirect - 1000;
-            $timeout(countdown, 1000);
-          }
-        };
-        countdown();
-        return false; // Don't continue polling.
-      }
-    }
+    $scope.state = state;
 
     // A cluster is named if the state returns a non-empty string name.
     // Track whether this cluster is named in a Boolean for display purposes.
@@ -95,8 +88,6 @@
     if (hasSelectedText() && $scope.time_since_update < 20000) {
       return true;
     }
-
-    $scope.data = data;
 
     // Pass this pollTime to all relativeDate calls to make them all relative to
     // the same moment in time.
@@ -188,22 +179,22 @@
 
       framework.cpus_share = 0;
       if ($scope.total_cpus > 0) {
-        framework.cpus_share = framework.resources.cpus / $scope.total_cpus;
+        framework.cpus_share = framework.used_resources.cpus / $scope.total_cpus;
       }
 
       framework.gpus_share = 0;
       if ($scope.total_gpus > 0) {
-        framework.gpus_share = framework.resources.gpus / $scope.total_gpus;
+        framework.gpus_share = framework.used_resources.gpus / $scope.total_gpus;
       }
 
       framework.mem_share = 0;
       if ($scope.total_mem > 0) {
-        framework.mem_share = framework.resources.mem / $scope.total_mem;
+        framework.mem_share = framework.used_resources.mem / $scope.total_mem;
       }
 
       framework.disk_share = 0;
       if ($scope.total_disk > 0) {
-        framework.disk_share = framework.resources.disk / $scope.total_disk;
+        framework.disk_share = framework.used_resources.disk / $scope.total_disk;
       }
 
       framework.max_share = Math.max(
@@ -249,16 +240,8 @@
     return true; // Continue polling.
   }
 
-  // Add a filter to convert small float number to decimal string
-  mesosApp.filter('decimalFloat', function() {
-    return function(num) {
-      return num ? parseFloat(num.toFixed(4)).toString() : num;
-    }
-  });
-
   // Update the outermost scope with the metrics/snapshot endpoint.
-  function updateMetrics($scope, $timeout, data) {
-    var metrics = JSON.parse(data);
+  function updateMetrics($scope, $timeout, metrics) {
     $scope.staging_tasks = metrics['master/tasks_staging'];
     $scope.starting_tasks = metrics['master/tasks_starting'];
     $scope.running_tasks = metrics['master/tasks_running'];
@@ -341,6 +324,18 @@
       if (!matched) $scope.navbarActiveTab = null;
     });
 
+    var leadingMasterURL = function(path) {
+      // Use current location as address in case we could not find the
+      // leading master.
+      var address = location.hostname + ':' + location.port;
+      if ($scope.state && $scope.state.leader_info) {
+          address = $scope.state.leader_info.hostname + ':' +
+                    $scope.state.leader_info.port;
+      }
+
+      return '//' + address + path;
+    }
+
     var popupErrorModal = function() {
       if ($scope.delay >= 128000) {
         $scope.delay = 2000;
@@ -396,10 +391,13 @@
     };
 
     var pollState = function() {
-      $http.get('master/state',
-                {transformResponse: function(data) { return data; }})
-        .success(function(data) {
-          if (updateState($scope, $timeout, data)) {
+      // When the current master is not the leader, the request is redirected to
+      // the leading master automatically. This would cause a CORS error if we
+      // use XMLHttpRequest here. To avoid the CORS error, we use JSONP as a
+      // workaround. Please refer to MESOS-5911 for further details.
+      $http.jsonp(leadingMasterURL('/master/state?jsonp=JSON_CALLBACK'))
+        .success(function(response) {
+          if (updateState($scope, $timeout, response)) {
             $scope.delay = updateInterval(_.size($scope.agents));
             $timeout(pollState, $scope.delay);
           }
@@ -412,17 +410,20 @@
     };
 
     var pollMetrics = function() {
-      $http.get('metrics/snapshot',
-                {transformResponse: function(data) { return data; }})
-        .success(function(data) {
-          if (updateMetrics($scope, $timeout, data)) {
+      $http.jsonp(leadingMasterURL('/metrics/snapshot?jsonp=JSON_CALLBACK'))
+        .success(function(response) {
+          if (updateMetrics($scope, $timeout, response)) {
             $scope.delay = updateInterval(_.size($scope.agents));
             $timeout(pollMetrics, $scope.delay);
           }
         })
-        .error(function() {
+        .error(function(message, code) {
           if ($scope.isErrorModalOpen === false) {
-            popupErrorModal();
+            // If return code is 401 or 403 the user is unauthorized to reach
+            // the endpoint, which is not a connection error.
+            if ([401, 403].indexOf(code) < 0) {
+              popupErrorModal();
+            }
           }
         });
     };
@@ -562,18 +563,14 @@
 
       $http.jsonp('//' + host + '/metrics/snapshot?jsonp=JSON_CALLBACK')
         .success(function (response) {
-          if (!$scope.state) {
-            $scope.state = {};
-          }
-
-          $scope.state.staging_tasks = response['slave/tasks_staging'];
-          $scope.state.starting_tasks = response['slave/tasks_starting'];
-          $scope.state.running_tasks = response['slave/tasks_running'];
-          $scope.state.killing_tasks = response['slave/tasks_killing'];
-          $scope.state.finished_tasks = response['slave/tasks_finished'];
-          $scope.state.killed_tasks = response['slave/tasks_killed'];
-          $scope.state.failed_tasks = response['slave/tasks_failed'];
-          $scope.state.lost_tasks = response['slave/tasks_lost'];
+          $scope.staging_tasks = response['slave/tasks_staging'];
+          $scope.starting_tasks = response['slave/tasks_starting'];
+          $scope.running_tasks = response['slave/tasks_running'];
+          $scope.killing_tasks = response['slave/tasks_killing'];
+          $scope.finished_tasks = response['slave/tasks_finished'];
+          $scope.killed_tasks = response['slave/tasks_killed'];
+          $scope.failed_tasks = response['slave/tasks_failed'];
+          $scope.lost_tasks = response['slave/tasks_lost'];
         })
         .error(function(reason) {
           $scope.alert_message = 'Failed to get agent metrics: ' + reason;
@@ -726,6 +723,8 @@
             return;
           }
 
+          setTaskSandbox($scope.executor);
+
           $('#agent').show();
         })
         .error(function (reason) {
@@ -743,15 +742,17 @@
   }]);
 
 
-  // Reroutes a request like
-  // '/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/browse'
-  // to the executor's sandbox. This requires a second request because the
-  // directory to browse is known by the agent but not by the master. Request
-  // the directory from the agent, and then redirect to it.
+  // Reroutes requests like:
+  //   * '/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/browse'
+  //   * '/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/tasks/:task_id/browse'
+  // to the sandbox directory of the executor or the task respectively. This
+  // requires a second request because the directory to browse is known by the
+  // agent but not by the master. Request the directory from the agent, and then
+  // redirect to it.
   //
   // TODO(ssorallen): Add `executor.directory` to the master's state endpoint
   // output so this controller of rerouting is no longer necessary.
-  mesosApp.controller('AgentExecutorRerouterCtrl',
+  mesosApp.controller('AgentTaskAndExecutorRerouterCtrl',
       function($alert, $http, $location, $routeParams, $scope, $window) {
 
     function goBack(flashMessageOrOptions) {
@@ -830,10 +831,37 @@
           );
         }
 
+        var sandboxDirectory = executor.directory;
+
+        function matchTask(task) {
+          return $routeParams.task_id === task.id;
+        }
+
+        // Continue to navigate to the task's sandbox if the task id is
+        // specified in route parameters.
+        if ($routeParams.task_id) {
+          setTaskSandbox(executor);
+
+          var task =
+            _.find(executor.tasks, matchTask) ||
+            _.find(executor.queued_tasks, matchTask) ||
+            _.find(executor.completed_tasks, matchTask);
+
+          if (!task) {
+            return goBack(
+              "Task with ID '" + $routeParams.task_id +
+                "' does not exist on agent with ID '" + $routeParams.agent_id +
+                "'."
+            );
+          }
+
+          sandboxDirectory = task.directory;
+        }
+
         // Navigate to a path like '/agents/:id/browse?path=%2Ftmp%2F', the
         // recognized "browse" endpoint for an agent.
         $location.path('/agents/' + $routeParams.agent_id + '/browse')
-          .search({path: executor.directory})
+          .search({path: sandboxDirectory})
           .replace();
       })
       .error(function(response) {

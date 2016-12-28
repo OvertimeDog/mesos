@@ -47,6 +47,7 @@ set(PROCESS_SRC
   latch.cpp
   logging.cpp
   metrics/metrics.cpp
+  mime.cpp
   pid.cpp
   poll_socket.cpp
   poll_socket.hpp
@@ -87,12 +88,23 @@ link_directories(${PROCESS_LIB_DIRS})
 
 # THE PROCESS LIBRARY (generates, e.g., libprocess.so, etc., on Linux).
 #######################################################################
-add_library(${PROCESS_TARGET} STATIC ${PROCESS_SRC})
+if (WIN32)
+  add_library(${PROCESS_TARGET} STATIC ${PROCESS_SRC})
+else (WIN32)
+  add_library(${PROCESS_TARGET} SHARED ${PROCESS_SRC})
+
+  set_target_properties(
+    ${PROCESS_TARGET} PROPERTIES
+    POSITION_INDEPENDENT_CODE TRUE
+    )
+endif (WIN32)
+
 set_target_properties(
   ${PROCESS_TARGET} PROPERTIES
   VERSION ${PROCESS_PACKAGE_VERSION}
   SOVERSION ${PROCESS_PACKAGE_SOVERSION}
   )
+
 add_dependencies(${PROCESS_TARGET} ${PROCESS_DEPENDENCIES})
 
 # ADD LINKER FLAGS (generates, e.g., -lglog on Linux).

@@ -84,7 +84,8 @@ class ShutdownProcess : public Process<ShutdownProcess>
 {
 public:
   explicit ShutdownProcess(const Duration& _gracePeriod)
-    : gracePeriod(_gracePeriod) {}
+    : ProcessBase(ID::generate("exec-shutdown")),
+      gracePeriod(_gracePeriod) {}
 
 protected:
   virtual void initialize()
@@ -291,16 +292,12 @@ protected:
     message.mutable_framework_id()->MergeFrom(frameworkId);
 
     // Send all unacknowledged updates.
-    // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-    // supports it.
-    foreach (const StatusUpdate& update, updates.values()) {
+    foreachvalue (const StatusUpdate& update, updates) {
       message.add_updates()->MergeFrom(update);
     }
 
     // Send all unacknowledged tasks.
-    // TODO(vinod): Use foreachvalue instead once LinkedHashmap
-    // supports it.
-    foreach (const TaskInfo& task, tasks.values()) {
+    foreachvalue (const TaskInfo& task, tasks) {
       message.add_tasks()->MergeFrom(task);
     }
 
@@ -603,6 +600,7 @@ private:
 MesosExecutorDriver::MesosExecutorDriver(mesos::Executor* _executor)
   : executor(_executor),
     process(nullptr),
+    latch(nullptr),
     status(DRIVER_NOT_STARTED)
 {
   GOOGLE_PROTOBUF_VERIFY_VERSION;
@@ -618,11 +616,11 @@ MesosExecutorDriver::MesosExecutorDriver(mesos::Executor* _executor)
     return;
   }
 
-  // Initialize Latch.
-  latch = new Latch();
-
   // Initialize libprocess.
   process::initialize();
+
+  // Initialize Latch.
+  latch = new Latch();
 
   // Initialize logging.
   if (flags.initialize_driver_logging) {

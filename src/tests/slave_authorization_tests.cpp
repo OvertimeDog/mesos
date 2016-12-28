@@ -15,6 +15,7 @@
 // limitations under the License.
 
 #include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 
@@ -24,6 +25,7 @@
 
 #include <mesos/module/authorizer.hpp>
 
+#include <process/clock.hpp>
 #include <process/http.hpp>
 #include <process/owned.hpp>
 
@@ -46,6 +48,7 @@ using mesos::internal::slave::Slave;
 using mesos::master::detector::MasterDetector;
 using mesos::master::detector::StandaloneMasterDetector;
 
+using process::Clock;
 using process::Future;
 using process::Owned;
 
@@ -54,6 +57,7 @@ using process::http::OK;
 using process::http::Response;
 
 using std::string;
+using std::vector;
 
 using testing::AtMost;
 using testing::DoAll;
@@ -67,102 +71,14 @@ class SlaveAuthorizerTest : public MesosTest {};
 
 
 typedef ::testing::Types<
-  LocalAuthorizer,
-  tests::Module<Authorizer, TestLocalAuthorizer>>
-  AuthorizerTypes;
+// TODO(josephw): Modules are not supported on Windows (MESOS-5994).
+#ifndef __WINDOWS__
+    tests::Module<Authorizer, TestLocalAuthorizer>,
+#endif // __WINDOWS__
+    LocalAuthorizer> AuthorizerTypes;
 
 
 TYPED_TEST_CASE(SlaveAuthorizerTest, AuthorizerTypes);
-
-
-// This test verifies that only authorized principals
-// can access the '/flags' endpoint.
-TYPED_TEST(SlaveAuthorizerTest, AuthorizeFlagsEndpoint)
-{
-  const string endpoint = "flags";
-
-  // Setup ACLs so that only the default principal
-  // can access the '/flags' endpoint.
-  ACLs acls;
-  acls.set_permissive(false);
-
-  mesos::ACL::GetEndpoint* acl = acls.add_get_endpoints();
-  acl->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
-  acl->mutable_paths()->add_values("/" + endpoint);
-
-  // Create an `Authorizer` with the ACLs.
-  Try<Authorizer*> create = TypeParam::create(parameterize(acls));
-  ASSERT_SOME(create);
-  Owned<Authorizer> authorizer(create.get());
-
-  StandaloneMasterDetector detector;
-  Try<Owned<cluster::Slave>> agent =
-    this->StartSlave(&detector, authorizer.get());
-  ASSERT_SOME(agent);
-
-  Future<Response> response = http::get(
-      agent.get()->pid,
-      endpoint,
-      None(),
-      createBasicAuthHeaders(DEFAULT_CREDENTIAL));
-
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response)
-    << response.get().body;
-
-  response = http::get(
-      agent.get()->pid,
-      endpoint,
-      None(),
-      createBasicAuthHeaders(DEFAULT_CREDENTIAL_2));
-
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response)
-    << response.get().body;
-}
-
-
-// This test verifies that access to the '/flags' endpoint can be authorized
-// without authentication if an authorization rule exists that applies to
-// anyone. The authorizer will map the absence of a principal to "ANY".
-TYPED_TEST(SlaveAuthorizerTest, AuthorizeFlagsEndpointWithoutPrincipal)
-{
-  const string endpoint = "flags";
-
-  // Because the authenticators' lifetime is tied to libprocess's lifetime,
-  // it may already be set by other tests. We have to unset it here to disable
-  // HTTP authentication.
-  // TODO(nfnt): Fix this behavior. The authenticator should be unset by
-  // every test case that sets it, similar to how it's done for the master.
-  http::authentication::unsetAuthenticator(
-      slave::DEFAULT_HTTP_AUTHENTICATION_REALM);
-
-  // Setup ACLs so that any principal can access the '/flags' endpoint.
-  ACLs acls;
-  acls.set_permissive(false);
-
-  mesos::ACL::GetEndpoint* acl = acls.add_get_endpoints();
-  acl->mutable_principals()->set_type(mesos::ACL::Entity::ANY);
-  acl->mutable_paths()->add_values("/" + endpoint);
-
-  slave::Flags agentFlags = this->CreateSlaveFlags();
-  agentFlags.acls = acls;
-  agentFlags.authenticate_http = false;
-  agentFlags.http_credentials = None();
-
-  // Create an `Authorizer` with the ACLs.
-  Try<Authorizer*> create = TypeParam::create(parameterize(acls));
-  ASSERT_SOME(create);
-  Owned<Authorizer> authorizer(create.get());
-
-  StandaloneMasterDetector detector;
-  Try<Owned<cluster::Slave>> agent = this->StartSlave(
-      &detector, authorizer.get(), agentFlags);
-  ASSERT_SOME(agent);
-
-  Future<Response> response = http::get(agent.get()->pid, endpoint);
-
-  AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response)
-    << response.get().body;
-}
 
 
 // This test verifies that authorization based endpoint filtering
@@ -230,13 +146,13 @@ TYPED_TEST(SlaveAuthorizerTest, FilterStateEndpoint)
   Try<Owned<cluster::Master>> master = this->StartMaster(authorizer.get());
   ASSERT_SOME(master);
 
-  // Resgister framework with user "bar".
+  // Register framework with user "bar".
   FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
   frameworkInfo.set_role("role");
   frameworkInfo.set_user("bar");
 
   // Create an executor with user "bar".
-  ExecutorInfo executor = CREATE_EXECUTOR_INFO("test-executor", "sleep 2");
+  ExecutorInfo executor = createExecutorInfo("test-executor", "sleep 2");
   executor.mutable_command()->set_user("bar");
 
   MockExecutor exec(executor.executor_id());
@@ -356,6 +272,103 @@ TYPED_TEST(SlaveAuthorizerTest, FilterStateEndpoint)
 }
 
 
+TYPED_TEST(SlaveAuthorizerTest, ViewFlags)
+{
+  ACLs acls;
+
+  {
+    // Default principal can see the flags.
+    mesos::ACL::ViewFlags* acl = acls.add_view_flags();
+    acl->mutable_principals()->add_values(DEFAULT_CREDENTIAL.principal());
+    acl->mutable_flags()->set_type(ACL::Entity::ANY);
+  }
+
+  {
+    // Second default principal cannot see the flags.
+    mesos::ACL::ViewFlags* acl = acls.add_view_flags();
+    acl->mutable_principals()->add_values(DEFAULT_CREDENTIAL_2.principal());
+    acl->mutable_flags()->set_type(ACL::Entity::NONE);
+  }
+
+  // Create an `Authorizer` with the ACLs.
+  Try<Authorizer*> create = TypeParam::create(parameterize(acls));
+  ASSERT_SOME(create);
+  Owned<Authorizer> authorizer(create.get());
+
+  StandaloneMasterDetector detector;
+
+  Future<Nothing> recover = FUTURE_DISPATCH(_, &Slave::__recover);
+
+  Try<Owned<cluster::Slave>> agent =
+    this->StartSlave(&detector, authorizer.get());
+
+  ASSERT_SOME(agent);
+
+  AWAIT_READY(recover);
+
+  // Ensure that the slave has finished recovery.
+  Clock::pause();
+  Clock::settle();
+  Clock::resume();
+
+  // The default principal should be able to access the flags.
+  {
+    Future<Response> response = http::get(
+        agent.get()->pid,
+        "flags",
+        None(),
+        createBasicAuthHeaders(DEFAULT_CREDENTIAL));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response)
+        << response.get().body;
+
+    response = http::get(
+        agent.get()->pid,
+        "state",
+        None(),
+        createBasicAuthHeaders(DEFAULT_CREDENTIAL));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response)
+        << response.get().body;
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+    JSON::Object state = parse.get();
+
+    ASSERT_TRUE(state.values["flags"].is<JSON::Object>());
+    EXPECT_TRUE(1u <= state.values["flags"].as<JSON::Object>().values.size());
+  }
+
+  // The second default principal should not have access to the
+  // /flags endpoint and get a filtered view of the /state one.
+  {
+    Future<Response> response = http::get(
+        agent.get()->pid,
+        "flags",
+        None(),
+        createBasicAuthHeaders(DEFAULT_CREDENTIAL_2));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(Forbidden().status, response)
+        << response.get().body;
+
+    response = http::get(
+        agent.get()->pid,
+        "state",
+        None(),
+        createBasicAuthHeaders(DEFAULT_CREDENTIAL_2));
+
+    AWAIT_EXPECT_RESPONSE_STATUS_EQ(OK().status, response)
+        << response.get().body;
+
+    Try<JSON::Object> parse = JSON::parse<JSON::Object>(response.get().body);
+    ASSERT_SOME(parse);
+    JSON::Object state = parse.get();
+
+    EXPECT_TRUE(state.values.find("flags") == state.values.end());
+  }
+}
+
+
 // Parameterized fixture for agent-specific authorization tests. The
 // path of the tested endpoint is passed as the only parameter.
 class SlaveEndpointTest:
@@ -374,7 +387,6 @@ INSTANTIATE_TEST_CASE_P(
     ::testing::Values(
         "monitor/statistics",
         "monitor/statistics.json",
-        "flags",
         "containers"));
 
 
@@ -388,8 +400,17 @@ TEST_P(SlaveEndpointTest, AuthorizedRequest)
 
   MockAuthorizer mockAuthorizer;
 
+  Future<Nothing> recover = FUTURE_DISPATCH(_, &Slave::__recover);
+
   Try<Owned<cluster::Slave>> agent = StartSlave(&detector, &mockAuthorizer);
   ASSERT_SOME(agent);
+
+  AWAIT_READY(recover);
+
+  // Ensure that the slave has finished recovery.
+  Clock::pause();
+  Clock::settle();
+  Clock::resume();
 
   Future<authorization::Request> request;
   EXPECT_CALL(mockAuthorizer, authorized(_))
@@ -429,8 +450,17 @@ TEST_P(SlaveEndpointTest, UnauthorizedRequest)
 
   MockAuthorizer mockAuthorizer;
 
+  Future<Nothing> recover = FUTURE_DISPATCH(_, &Slave::__recover);
+
   Try<Owned<cluster::Slave>> agent = StartSlave(&detector, &mockAuthorizer);
   ASSERT_SOME(agent);
+
+  AWAIT_READY(recover);
+
+  // Ensure that the slave has finished recovery.
+  Clock::pause();
+  Clock::settle();
+  Clock::resume();
 
   EXPECT_CALL(mockAuthorizer, authorized(_))
     .WillOnce(Return(false));
@@ -454,8 +484,17 @@ TEST_P(SlaveEndpointTest, NoAuthorizer)
 
   StandaloneMasterDetector detector;
 
+  Future<Nothing> recover = FUTURE_DISPATCH(_, &Slave::__recover);
+
   Try<Owned<cluster::Slave>> agent = StartSlave(&detector, CreateSlaveFlags());
   ASSERT_SOME(agent);
+
+  AWAIT_READY(recover);
+
+  // Ensure that the slave has finished recovery.
+  Clock::pause();
+  Clock::settle();
+  Clock::resume();
 
   Future<Response> response = http::get(
       agent.get()->pid,

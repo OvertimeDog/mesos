@@ -5,7 +5,27 @@ layout: documentation
 
 # Scheduler HTTP API
 
-Mesos 0.24.0 added **experimental** support for v1 Scheduler HTTP API.
+A Mesos scheduler can be built in two different ways:
+
+1. By using the `SchedulerDriver` C++ interface. The `SchedulerDriver` handles
+the details of communicating with the Mesos master. Scheduler developers
+implement custom scheduling logic by registering callbacks with the
+`SchedulerDriver` for significant events, such as receiving a new resource offer
+or a status update on a task. Because the `SchedulerDriver` interface is written
+in C++, this typically requires that scheduler developers either use C++ or use
+a C++ binding to their language of choice (e.g., JNI when using JVM-based
+languages).
+
+2. By using the new HTTP API. This allows Mesos schedulers to be developed
+without using C++ or a native client library; instead, a custom scheduler
+interacts with the Mesos master via HTTP requests, as described below. Although
+it is theoretically possible to use the HTTP scheduler API "directly" (e.g., by
+using a generic HTTP library), most scheduler developers should use a library for
+their language of choice that manages the details of the HTTP API; see the
+document on [HTTP API client libraries](api-client-libraries.md) for a list.
+
+The v1 Scheduler HTTP API was introduced in Mesos 0.24.0. As of Mesos 1.0, it is
+considered stable and is the recommended way to develop new Mesos schedulers.
 
 
 ## Overview
@@ -42,8 +62,8 @@ For example, a stream may look like:
 
 ```
 128\n
-{"type": "SUBSCRIBED","subscribed": {"framework_id": {"value":"12220-3440-12532-2345"},...}104\n
-{"framework_id": {"value": "12220-3440-12532-2345"},...{"value" : "12220-3440-12532-O12"},}208\n
+{"type": "SUBSCRIBED","subscribed": {"framework_id": {"value":"12220-3440-12532-2345"},"heartbeat_interval_seconds":15.0}20\n
+{"type":"HEARTBEAT"}675\n
 ...
 ```
 
@@ -141,7 +161,7 @@ HTTP/1.1 202 Accepted
 ```
 
 ### ACCEPT
-Sent by the scheduler when it accepts offer(s) sent by the master. The `ACCEPT` request includes the type of operations (e.g., launch task, reserve resources, create volumes) that the scheduler wants to perform on the offers. Note that until the scheduler replies (accepts or declines) to an offer, its resources are considered allocated to the framework. Also, any of the offer's resources not used in the `ACCEPT` call (e.g., to launch a task) are considered declined and might be reoffered to other frameworks. In other words, the same `OfferID` cannot be used in more than one `ACCEPT` call. These semantics might change when we add new features to Mesos (e.g., persistence, reservations, optimistic offers, resizeTask, etc.).
+Sent by the scheduler when it accepts offer(s) sent by the master. The `ACCEPT` request includes the type of operations (e.g., launch task, launch task group, reserve resources, create volumes) that the scheduler wants to perform on the offers. Note that until the scheduler replies (accepts or declines) to an offer, its resources are considered allocated to the framework. Also, any of the offer's resources not used in the `ACCEPT` call (e.g., to launch a task or task group) are considered declined and might be reoffered to other frameworks. In other words, the same `OfferID` cannot be used in more than one `ACCEPT` call. These semantics might change when we add new features to Mesos (e.g., persistence, reservations, optimistic offers, resizeTask, etc.).
 
 ```
 ACCEPT Request (JSON):
@@ -152,15 +172,48 @@ Content-Type: application/json
 Mesos-Stream-Id: 130ae4e3-6b13-4ef4-baa9-9f2e85c3e9af
 
 {
-  "framework_id"	: {"value" : "12220-3440-12532-2345"},
-  "type"			: "ACCEPT",
-  "accept"			: {
-    "offer_ids"		: [
-                       {"value" : "12220-3440-12532-O12"},
-                       {"value" : "12220-3440-12532-O12"}
-                      ],
-    "operations"	: [ {"type" : "LAUNCH", "launch" : {...}} ],
-    "filters"		: {...}
+  "framework_id"   : {"value" : "12220-3440-12532-2345"},
+  "type"           : "ACCEPT",
+  "accept"         : {
+    "offer_ids"    : [
+                      {"value" : "12220-3440-12532-O12"}
+                     ],
+     "operations"  : [
+                      {
+                       "type"         : "LAUNCH",
+                       "launch"       : {
+                         "task_infos" : [
+                                         {
+                                          "name"        : "My Task",
+                                          "task_id"     : {"value" : "12220-3440-12532-my-task"},
+                                          "agent_id"    : {"value" : "12220-3440-12532-S1233"},
+                                          "executor"    : {
+                                            "command"     : {
+                                              "shell"     : true,
+                                              "value"     : "sleep 1000"
+                                            },
+                                            "executor_id" : {"value" : "12214-23523-my-executor"}
+                                          },
+                                          "resources"   : [
+                                                           {
+                                                            "name"  : "cpus",
+						            "role"  : "*",
+						            "type"  : "SCALAR",
+						            "scalar": {"value": 1.0}
+					                   },
+                                                           {
+						            "name"  : "mem",
+						            "role"  : "*",
+						            "type"  : "SCALAR",
+						            "scalar": {"value": 128.0}
+					                   }
+                                                          ]
+                                         }
+                                        ]
+                       }
+                      }
+                     ],
+     "filters"     : {"refuse_seconds" : 5.0}
   }
 }
 
@@ -188,7 +241,7 @@ Mesos-Stream-Id: 130ae4e3-6b13-4ef4-baa9-9f2e85c3e9af
                    {"value" : "12220-3440-12532-O12"},
                    {"value" : "12220-3440-12532-O13"}
                   ],
-    "filters"	: {...}
+    "filters"	: {"refuse_seconds" : 5.0}
   }
 }
 
@@ -219,7 +272,7 @@ HTTP/1.1 202 Accepted
 ```
 
 ### KILL
-Sent by the scheduler to kill a specific task. If the scheduler has a custom executor, the kill is forwarded to the executor; it is up to the executor to kill the task and send a `TASK_KILLED` (or `TASK_FAILED`) update. Mesos releases the resources for a task once it receives a terminal update for the task. If the task is unknown to the master, a `TASK_LOST` will be generated.
+Sent by the scheduler to kill a specific task. If the scheduler has a custom executor, the kill is forwarded to the executor; it is up to the executor to kill the task and send a `TASK_KILLED` (or `TASK_FAILED`) update. If the task hasn't yet been delivered to the executor when Mesos master or agent receives the kill request, a `TASK_KILLED` is generated and the task launch is not forwarded to the executor. Note that if the task belongs to a task group, killing of one task results in all tasks in the task group being killed. Mesos releases the resources for a task once it receives a terminal update for the task. If the task is unknown to the master, a `TASK_LOST` will be generated.
 
 ```
 KILL Request (JSON):
@@ -396,13 +449,28 @@ OFFERS Event (JSON)
   "type"	: "OFFERS",
   "offers"	: [
     {
-      "offer_id":{"value": "12214-23523-O235235"},
-      "framework_id":{"value": "12124-235325-32425"},
-      "agent_id":{"value": "12325-23523-S23523"},
-      "hostname":"agent.host",
-      "resources":[...],
-      "attributes":[...],
-      "executor_ids":[]
+      "offer_id"     : {"value": "12214-23523-O235235"},
+      "framework_id" : {"value": "12124-235325-32425"},
+      "agent_id"     : {"value": "12325-23523-S23523"},
+      "hostname"     : "agent.host",
+      "resources"    : [
+                        {
+                         "name"   : "cpus",
+                         "type"   : "SCALAR",
+                         "scalar" : {"value" : 2},
+                         "role"   : "*"
+                        }
+                       ],
+      "attributes"   : [
+                        {
+                         "name"   : "os",
+                         "type"   : "TEXT",
+                         "text"   : {"value" : "ubuntu16.04"}
+                        }
+                       ],
+      "executor_ids" : [
+                        {"value" : "12214-23523-my-executor"}
+                       ]
     }
   ]
 }

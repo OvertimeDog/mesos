@@ -93,7 +93,9 @@ public:
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
-      const hashmap<std::string, double>& weights) = 0;
+      const hashmap<std::string, double>& weights,
+      const Option<std::set<std::string>>&
+        fairnessExcludeResourceNames = None()) = 0;
 
   /**
    * Informs the allocator of the recovered state from the master.
@@ -119,12 +121,16 @@ public:
    *
    * @param used Resources used by this framework. The allocator should
    *     account for these resources when updating the allocation of this
-   *     framework.
+   *     framework. The allocator should avoid double accounting when yet
+   *     unknown agents are added later in `addSlave()`.
+   *
+   * @param active Whether the framework is initially activated.
    */
   virtual void addFramework(
       const FrameworkID& frameworkId,
       const FrameworkInfo& frameworkInfo,
-      const hashmap<SlaveID, Resources>& used) = 0;
+      const hashmap<SlaveID, Resources>& used,
+      bool active) = 0;
 
   /**
    * Removes a framework from the Mesos cluster. It is up to an allocator to
@@ -172,7 +178,9 @@ public:
    * @param total The `total` resources are passed explicitly because it
    *     includes resources that are dynamically "checkpointed" on the agent
    *     (e.g. persistent volumes, dynamic reservations, etc).
-   * @param used Resources that are allocated on the current agent.
+   * @param used Resources that are allocated on the current agent. The
+   *     allocator should avoid double accounting when yet unknown frameworks
+   *     are added later in `addFramework()`.
    */
   virtual void addSlave(
       const SlaveID& slaveId,
@@ -250,11 +258,13 @@ public:
    * This call is mainly intended to support persistence-related features
    * (dynamic reservation and persistent volumes). The allocator may react
    * differently for certain offer operations. The allocator should use this
-   * call to update bookkeeping information related to the framework.
+   * call to update bookkeeping information related to the framework. The
+   * `offeredResources` are the resources that the operations are applied to.
    */
   virtual void updateAllocation(
       const FrameworkID& frameworkId,
       const SlaveID& slaveId,
+      const Resources& offeredResources,
       const std::vector<Offer::Operation>& operations) = 0;
 
   /**

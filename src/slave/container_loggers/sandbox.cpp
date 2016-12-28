@@ -24,6 +24,7 @@
 
 #include <process/dispatch.hpp>
 #include <process/future.hpp>
+#include <process/id.hpp>
 #include <process/owned.hpp>
 #include <process/process.hpp>
 #include <process/subprocess.hpp>
@@ -51,16 +52,13 @@ class SandboxContainerLoggerProcess :
   public Process<SandboxContainerLoggerProcess>
 {
 public:
-  Future<Nothing> recover(
-      const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory)
-  {
-    return Nothing();
-  }
+  SandboxContainerLoggerProcess()
+    : ProcessBase(process::ID::generate("sandbox-logger")) {}
 
   process::Future<ContainerLogger::SubprocessInfo> prepare(
       const ExecutorInfo& executorInfo,
-      const std::string& sandboxDirectory)
+      const std::string& sandboxDirectory,
+      const Option<std::string>& user)
   {
     ContainerLogger::SubprocessInfo info;
 
@@ -92,28 +90,18 @@ Try<Nothing> SandboxContainerLogger::initialize()
 }
 
 
-Future<Nothing> SandboxContainerLogger::recover(
-    const ExecutorInfo& executorInfo,
-    const std::string& sandboxDirectory)
-{
-  return dispatch(
-      process.get(),
-      &SandboxContainerLoggerProcess::recover,
-      executorInfo,
-      sandboxDirectory);
-}
-
-
 Future<ContainerLogger::SubprocessInfo>
 SandboxContainerLogger::prepare(
     const ExecutorInfo& executorInfo,
-    const std::string& sandboxDirectory)
+    const std::string& sandboxDirectory,
+    const Option<std::string>& user)
 {
   return dispatch(
       process.get(),
       &SandboxContainerLoggerProcess::prepare,
       executorInfo,
-      sandboxDirectory);
+      sandboxDirectory,
+      user);
 }
 
 } // namespace slave {

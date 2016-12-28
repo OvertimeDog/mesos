@@ -40,7 +40,9 @@
         //
         //     https://github.com/angular/angular.js/issues/1838
         .when('/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/browse',
-          {template: ' ', controller: 'AgentExecutorRerouterCtrl'})
+          {template: ' ', controller: 'AgentTaskAndExecutorRerouterCtrl'})
+        .when('/agents/:agent_id/frameworks/:framework_id/executors/:executor_id/tasks/:task_id/browse',
+          {template: ' ', controller: 'AgentTaskAndExecutorRerouterCtrl'})
         .when('/agents/:agent_id/browse',
           {templateUrl: 'static/browse.html', controller: 'BrowseCtrl'})
 
@@ -116,10 +118,19 @@
         }
       };
     })
+    // A filter that uses to convert small float number to decimal string.
+    .filter('decimalFloat', function() {
+      return function(num) {
+        return num ? parseFloat(num.toFixed(4)).toString() : num;
+      }
+    })
     .filter('dataSize', function() {
       var BYTES_PER_KB = Math.pow(2, 10);
       var BYTES_PER_MB = Math.pow(2, 20);
       var BYTES_PER_GB = Math.pow(2, 30);
+      var BYTES_PER_TB = Math.pow(2, 40);
+      var BYTES_PER_PB = Math.pow(2, 50);
+      // NOTE: Number.MAX_SAFE_INTEGER is 2^53 - 1
 
       return function(bytes) {
         if (bytes == null || isNaN(bytes)) {
@@ -130,8 +141,12 @@
           return (bytes / BYTES_PER_KB).toFixed() + ' KB';
         } else if (bytes < BYTES_PER_GB) {
           return (bytes / BYTES_PER_MB).toFixed() + ' MB';
-        } else {
+        } else if (bytes < BYTES_PER_TB) {
           return (bytes / BYTES_PER_GB).toFixed(1) + ' GB';
+        } else if (bytes < BYTES_PER_PB) {
+          return (bytes / BYTES_PER_TB).toFixed(1) + ' TB';
+        } else {
+          return (bytes / BYTES_PER_PB).toFixed(1) + ' PB';
         }
       };
     })

@@ -15,11 +15,13 @@
 
 #include <direct.h>
 #include <io.h>
-#include <TlHelp32.h>
 #include <Psapi.h>
+#include <shlobj.h>
+#include <TlHelp32.h>
 
 #include <sys/utime.h>
 
+#include <codecvt>
 #include <list>
 #include <map>
 #include <set>
@@ -34,6 +36,7 @@
 #include <stout/windows.hpp>
 
 #include <stout/os/os.hpp>
+#include <stout/os/process.hpp>
 #include <stout/os/read.hpp>
 
 #include <stout/os/raw/environment.hpp>
@@ -151,8 +154,12 @@ inline Try<std::set<pid_t>> pids(Option<pid_t> group, Option<pid_t> session)
     // TODO(alexnaparu): Set a limit to the memory that can be used.
     processes.resize(max_items);
     size_in_bytes = processes.size() * sizeof(pid_t);
-    BOOL result = ::EnumProcesses(processes.data(), size_in_bytes,
-                                  &bytes_returned);
+    CHECK_LE(size_in_bytes, MAXDWORD);
+
+    BOOL result = ::EnumProcesses(
+        processes.data(),
+        static_cast<DWORD>(size_in_bytes),
+        &bytes_returned);
 
     if (!result) {
       return WindowsError("os::pids: Call to `EnumProcesses` failed");
@@ -369,12 +376,6 @@ inline std::string hstrerror(int err)
 }
 
 
-// This function is a portable version of execvpe ('p' means searching
-// executable from PATH and 'e' means setting environments). We add
-// this function because it is not available on all systems.
-inline int execvpe(const char* file, char** argv, char** envp) = delete;
-
-
 inline Try<Nothing> chown(
     uid_t uid,
     gid_t gid,
@@ -426,8 +427,8 @@ inline Try<Load> loadavg()
   // No Windows equivalent, return an error until there is a need. We can
   // construct an approximation of this function by periodically polling
   // `GetSystemTimes` and using a sliding window of statistics.
-  return WindowsErrorBase(ERROR_NOT_SUPPORTED,
-                          "Failed to determine system load averages");
+  return WindowsError(ERROR_NOT_SUPPORTED,
+                      "Failed to determine system load averages");
 }
 
 
@@ -490,32 +491,6 @@ inline Try<UTSInfo> uname()
 }
 
 
-// Looks in the environment variables for the specified key and
-// returns a string representation of its value. If no environment
-// variable matching key is found, None() is returned.
-inline Option<std::string> getenv(const std::string& key)
-{
-  DWORD buffer_size = ::GetEnvironmentVariable(key.c_str(), nullptr, 0);
-  if (buffer_size == 0) {
-    return None();
-  }
-
-  std::unique_ptr<char[]> environment(new char[buffer_size]);
-
-  DWORD value_size =
-    ::GetEnvironmentVariable(key.c_str(), environment.get(), buffer_size);
-
-  if (value_size == 0) {
-    // If `value_size == 0` here, that probably means the environment variable
-    // was deleted between when we checked and when we allocated the buffer. We
-    // report `None` to indicate the environment variable was not found.
-    return None();
-  }
-
-  return std::string(environment.get());
-}
-
-
 inline tm* gmtime_r(const time_t* timep, tm* result)
 {
   return ::gmtime_s(result, timep) == ERROR_SUCCESS ? result : nullptr;
@@ -543,8 +518,8 @@ inline Result<PROCESSENTRY32> process_entry(pid_t pid)
   // Get first process so that we can loop through process entries until we
   // find the one we care about.
   SetLastError(ERROR_SUCCESS);
-  bool has_next = Process32First(safe_snapshot_handle.get(), &process_entry);
-  if (!has_next) {
+  BOOL has_next = Process32First(safe_snapshot_handle.get(), &process_entry);
+  if (has_next == FALSE) {
     // No first process was found. We should never be here; it is arguable we
     // should return `None`, since we won't find the PID we're looking for, but
     // we elect to return `Error` because something terrible has probably
@@ -557,14 +532,14 @@ inline Result<PROCESSENTRY32> process_entry(pid_t pid)
   }
 
   // Loop through processes until we find the one we're looking for.
-  while (has_next) {
+  while (has_next == TRUE) {
     if (process_entry.th32ProcessID == pid) {
       // Process found.
       return process_entry;
     }
 
     has_next = Process32Next(safe_snapshot_handle.get(), &process_entry);
-    if (!has_next) {
+    if (has_next == FALSE) {
       DWORD last_error = GetLastError();
       if (last_error != ERROR_NO_MORE_FILES && last_error != ERROR_SUCCESS) {
         return WindowsError(
@@ -747,19 +722,31 @@ inline Try<Nothing> kill_job(pid_t pid)
 }
 
 
-inline std::string temp()
+inline Try<std::string> var()
 {
-  // Get temp folder for current user.
-  char temp_folder[MAX_PATH + 2];
-  if (::GetTempPath(MAX_PATH + 2, temp_folder) == 0) {
-    // Failed, try current folder.
-    if (::GetCurrentDirectory(MAX_PATH + 2, temp_folder) == 0) {
-      // Failed, use relative path.
-      return ".";
-    }
+  wchar_t* var_folder = nullptr;
+
+  // Retrieves the directory of `ProgramData` using the default options.
+  // NOTE: The location of `ProgramData` is fixed and so does not
+  // depend on the current user.
+  if (::SHGetKnownFolderPath(
+          FOLDERID_ProgramData,
+          KF_FLAG_DEFAULT,
+          nullptr,
+          &var_folder) // `PWSTR` is `typedef wchar_t*`.
+      != S_OK) {
+    return WindowsError("os::var: Call to `SHGetKnownFolderPath` failed");
   }
 
-  return std::string(temp_folder);
+  // Convert `wchar_t*` to `wstring`.
+  std::wstring wvar_folder(var_folder);
+
+  // Free the buffer allocated by `SHGetKnownFolderPath`.
+  CoTaskMemFree(static_cast<void*>(var_folder));
+
+  // Convert UTF-16 `wstring` to UTF-8 `string`.
+  std::wstring_convert<std::codecvt_utf8_utf16<wchar_t>, wchar_t> converter;
+  return converter.to_bytes(wvar_folder);
 }
 
 

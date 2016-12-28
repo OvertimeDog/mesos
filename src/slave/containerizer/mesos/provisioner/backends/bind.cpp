@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <process/dispatch.hpp>
+#include <process/id.hpp>
 #include <process/process.hpp>
 
 #include <process/metrics/counter.hpp>
@@ -43,6 +44,9 @@ namespace slave {
 class BindBackendProcess : public Process<BindBackendProcess>
 {
 public:
+  BindBackendProcess()
+    : ProcessBase(process::ID::generate("bind-provisioner-backend")) {}
+
   Future<Nothing> provision(const vector<string>& layers, const string& rootfs);
 
   Future<bool> destroy(const string& rootfs);
@@ -98,7 +102,9 @@ Future<Nothing> BindBackend::provision(
 }
 
 
-Future<bool> BindBackend::destroy(const string& rootfs)
+Future<bool> BindBackend::destroy(
+    const string& rootfs,
+    const string& backendDir)
 {
   return dispatch(process.get(), &BindBackendProcess::destroy, rootfs);
 }

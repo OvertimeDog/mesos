@@ -16,6 +16,8 @@
 
 #include <ostream>
 
+#include <stout/protobuf.hpp>
+
 #include <mesos/v1/attributes.hpp>
 #include <mesos/v1/mesos.hpp>
 #include <mesos/v1/resources.hpp>
@@ -318,6 +320,18 @@ bool operator==(const ExecutorInfo& left, const ExecutorInfo& right)
 }
 
 
+bool operator==(const FileInfo& left, const FileInfo& right)
+{
+  return left.path() == right.path() &&
+    left.nlink() == right.nlink() &&
+    left.size() == right.size() &&
+    left.mtime() == right.mtime() &&
+    left.mode() == right.mode() &&
+    left.uid() == right.uid() &&
+    left.gid() == right.gid();
+}
+
+
 bool operator==(const MasterInfo& left, const MasterInfo& right)
 {
   return left.id() == right.id() &&
@@ -369,6 +383,13 @@ bool operator!=(const TaskStatus& left, const TaskStatus& right)
   return !(left == right);
 }
 
+
+ostream& operator<<(ostream& stream, const CapabilityInfo& capabilityInfo)
+{
+  return stream << JSON::protobuf(capabilityInfo);
+}
+
+
 ostream& operator<<(ostream& stream, const ContainerID& containerId)
 {
   return stream << containerId.value();
@@ -417,6 +438,12 @@ ostream& operator<<(ostream& stream, const RateLimits& limits)
 }
 
 
+ostream& operator<<(ostream& stream, const RLimitInfo& limits)
+{
+  return stream << JSON::protobuf(limits);
+}
+
+
 ostream& operator<<(ostream& stream, const AgentID& agentId)
 {
   return stream << agentId.value();
@@ -453,6 +480,12 @@ ostream& operator<<(ostream& stream, const MachineID& machineId)
 ostream& operator<<(ostream& stream, const TaskInfo& task)
 {
   return stream << task.DebugString();
+}
+
+
+ostream& operator<<(ostream& stream, const TaskGroupInfo& taskGroupInfo)
+{
+  return stream << taskGroupInfo.DebugString();
 }
 
 

@@ -55,7 +55,9 @@ public:
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
-      const hashmap<std::string, double>& weights);
+      const hashmap<std::string, double>& weights,
+      const Option<std::set<std::string>>&
+        fairnessExcludeResourceNames = None());
 
   void recover(
       const int expectedAgentCount,
@@ -64,7 +66,8 @@ public:
   void addFramework(
       const FrameworkID& frameworkId,
       const FrameworkInfo& frameworkInfo,
-      const hashmap<SlaveID, Resources>& used);
+      const hashmap<SlaveID, Resources>& used,
+      bool active);
 
   void removeFramework(
       const FrameworkID& frameworkId);
@@ -109,6 +112,7 @@ public:
   void updateAllocation(
       const FrameworkID& frameworkId,
       const SlaveID& slaveId,
+      const Resources& offeredResources,
       const std::vector<Offer::Operation>& operations);
 
   process::Future<Nothing> updateAvailable(
@@ -183,7 +187,9 @@ public:
           void(const FrameworkID&,
                const hashmap<SlaveID, UnavailableResources>&)>&
         inverseOfferCallback,
-      const hashmap<std::string, double>& weights) = 0;
+      const hashmap<std::string, double>& weights,
+      const Option<std::set<std::string>>&
+        fairnessExcludeResourceNames = None()) = 0;
 
   virtual void recover(
       const int expectedAgentCount,
@@ -192,7 +198,8 @@ public:
   virtual void addFramework(
       const FrameworkID& frameworkId,
       const FrameworkInfo& frameworkInfo,
-      const hashmap<SlaveID, Resources>& used) = 0;
+      const hashmap<SlaveID, Resources>& used,
+      bool active) = 0;
 
   virtual void removeFramework(
       const FrameworkID& frameworkId) = 0;
@@ -237,6 +244,7 @@ public:
   virtual void updateAllocation(
       const FrameworkID& frameworkId,
       const SlaveID& slaveId,
+      const Resources& offeredResources,
       const std::vector<Offer::Operation>& operations) = 0;
 
   virtual process::Future<Nothing> updateAvailable(
@@ -319,7 +327,8 @@ inline void MesosAllocator<AllocatorProcess>::initialize(
         void(const FrameworkID&,
               const hashmap<SlaveID, UnavailableResources>&)>&
       inverseOfferCallback,
-    const hashmap<std::string, double>& weights)
+    const hashmap<std::string, double>& weights,
+    const Option<std::set<std::string>>& fairnessExcludeResourceNames)
 {
   process::dispatch(
       process,
@@ -327,7 +336,8 @@ inline void MesosAllocator<AllocatorProcess>::initialize(
       allocationInterval,
       offerCallback,
       inverseOfferCallback,
-      weights);
+      weights,
+      fairnessExcludeResourceNames);
 }
 
 
@@ -348,14 +358,16 @@ template <typename AllocatorProcess>
 inline void MesosAllocator<AllocatorProcess>::addFramework(
     const FrameworkID& frameworkId,
     const FrameworkInfo& frameworkInfo,
-    const hashmap<SlaveID, Resources>& used)
+    const hashmap<SlaveID, Resources>& used,
+    bool active)
 {
   process::dispatch(
       process,
       &MesosAllocatorProcess::addFramework,
       frameworkId,
       frameworkInfo,
-      used);
+      used,
+      active);
 }
 
 
@@ -498,6 +510,7 @@ template <typename AllocatorProcess>
 inline void MesosAllocator<AllocatorProcess>::updateAllocation(
     const FrameworkID& frameworkId,
     const SlaveID& slaveId,
+    const Resources& offeredResources,
     const std::vector<Offer::Operation>& operations)
 {
   process::dispatch(
@@ -505,6 +518,7 @@ inline void MesosAllocator<AllocatorProcess>::updateAllocation(
       &MesosAllocatorProcess::updateAllocation,
       frameworkId,
       slaveId,
+      offeredResources,
       operations);
 }
 

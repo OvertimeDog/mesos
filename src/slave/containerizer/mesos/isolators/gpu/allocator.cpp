@@ -85,7 +85,7 @@ static Try<set<Gpu>> enumerateGpus(
   if (flags.nvidia_gpu_devices.isSome()) {
     indices = flags.nvidia_gpu_devices.get();
   } else {
-    for (unsigned int i = 0; i < resources.gpus().getOrElse(0); ++i) {
+    for (size_t i = 0; i < resources.gpus().getOrElse(0); ++i) {
       indices.push_back(i);
     }
   }
@@ -201,7 +201,7 @@ static Try<Resources> enumerateGpuResources(const Flags& flags)
   }
 
   if (resources.gpus().isSome() && !flags.nvidia_gpu_devices.isSome()) {
-    return Error("The `gpus` resource can not be set without also"
+    return Error("The `gpus` resource cannot be set without also"
                  " setting `--nvidia_gpu_devices`");
   }
 

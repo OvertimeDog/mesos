@@ -84,12 +84,12 @@ public:
     Call::Subscribe* subscribe = call.mutable_subscribe();
 
     // Send all unacknowledged updates.
-    foreach (const Call::Update& update, updates.values()) {
+    foreachvalue (const Call::Update& update, updates) {
       subscribe->add_unacknowledged_updates()->MergeFrom(update);
     }
 
     // Send all unacknowledged tasks.
-    foreach (const TaskInfo& task, tasks.values()) {
+    foreachvalue (const TaskInfo& task, tasks) {
       subscribe->add_unacknowledged_tasks()->MergeFrom(task);
     }
 
@@ -155,6 +155,12 @@ public:
           cout << "Finishing task " << task.task_id().value() << endl;
 
           sendStatusUpdate(task, TaskState::TASK_FINISHED);
+          break;
+        }
+
+        case Event::LAUNCH_GROUP: {
+          cout << "Received a LAUNCH_GROUP event";
+          // TODO(vinod): Implement this.
           break;
         }
 

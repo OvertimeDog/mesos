@@ -103,7 +103,7 @@ TEST_F(PathsTest, CreateExecutorDirectory)
 }
 
 
-TEST_F(PathsTest, ParseExecutorRunPath)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(PathsTest, ParseExecutorRunPath)
 {
   string goodDir = paths::getExecutorRunPath(
       rootDir,
@@ -164,12 +164,6 @@ TEST_F(PathsTest, ProvisionerDir)
 {
   EXPECT_EQ(path::join(rootDir, "provisioner"),
             paths::getProvisionerDir(rootDir));
-}
-
-
-TEST_F(PathsTest, Archive)
-{
-  EXPECT_EQ(path::join(rootDir, "archive"), paths::getArchiveDir(rootDir));
 }
 
 

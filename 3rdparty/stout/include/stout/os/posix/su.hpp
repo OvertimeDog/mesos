@@ -17,15 +17,22 @@
 #ifndef __STOUT_OS_POSIX_SU_HPP__
 #define __STOUT_OS_POSIX_SU_HPP__
 
-#include <string>
-
+#include <errno.h>
 #include <grp.h>
+#include <limits.h>
 #include <pwd.h>
+#include <unistd.h>
 
 #include <sys/syscall.h>
 
+#include <string>
+#include <vector>
+
 #include <stout/error.hpp>
+#include <stout/none.hpp>
 #include <stout/nothing.hpp>
+#include <stout/option.hpp>
+#include <stout/result.hpp>
 #include <stout/try.hpp>
 #include <stout/unreachable.hpp>
 

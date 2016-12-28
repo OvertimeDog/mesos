@@ -11,8 +11,8 @@ There are different ways you can get Mesos:
 
 1\. Download the latest stable release from [Apache](http://mesos.apache.org/downloads/) (***Recommended***)
 
-    $ wget http://www.apache.org/dist/mesos/0.28.2/mesos-0.28.2.tar.gz
-    $ tar -zxf mesos-0.28.2.tar.gz
+    $ wget http://www.apache.org/dist/mesos/1.1.0/mesos-1.1.0.tar.gz
+    $ tar -zxf mesos-1.1.0.tar.gz
 
 2\. Clone the Mesos git [repository](https://git-wip-us.apache.org/repos/asf/mesos.git) (***Advanced Users Only***)
 
@@ -26,7 +26,7 @@ Mesos runs on Linux (64 Bit) and Mac OS X (64 Bit). To build Mesos from source, 
 
 For full support of process isolation under Linux a recent kernel >=3.10 is required.
 
-Mesos agent also run on Windows. To build Mesos agent from source, Visual Studio 2015 is required.
+The Mesos agent also runs on Windows. To build Mesos from source, follow the instructions in the [Windows](windows.md) section.
 
 Make sure your hostname is resolvable via DNS or via `/etc/hosts` to allow full support of Docker's host-networking capabilities, needed for some of the Mesos tests. When in doubt, please validate that `/etc/hosts` contains your hostname.
 
@@ -49,7 +49,26 @@ Following are the instructions for stock Ubuntu 14.04. If you are using a differ
     # Install other Mesos dependencies.
     $ sudo apt-get -y install build-essential python-dev libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev
 
-### Mac OS X Yosemite & El Capitan
+### Ubuntu 16.04
+
+Following are the instructions for stock Ubuntu 16.04. If you are using a different OS, please install the packages accordingly.
+
+    # Update the packages.
+    $ sudo apt-get update
+
+    # Install a few utility tools.
+    $ sudo apt-get install -y tar wget git
+
+    # Install the latest OpenJDK.
+    $ sudo apt-get install -y openjdk-8-jdk
+
+    # Install autotools (Only necessary if building from git repository).
+    $ sudo apt-get install -y autoconf libtool
+
+    # Install other Mesos dependencies.
+    $ sudo apt-get -y install build-essential python-dev libcurl4-nss-dev libsasl2-dev libsasl2-modules maven libapr1-dev libsvn-dev zlib1g-dev
+
+### Mac OS X 10.10 (Yosemite), Mac OS X 10.11 (El Capitan), macOS 10.12 (Sierra)
 
 Following are the instructions for stock Mac OS X Yosemite and El Capitan. If you are using a different OS, please install the packages accordingly.
 
@@ -64,6 +83,26 @@ Following are the instructions for stock Mac OS X Yosemite and El Capitan. If yo
 
     # Install libraries.
     $ brew install wget git autoconf automake libtool subversion maven
+
+When compiling on macOS 10.12, the following is needed:
+
+    # There is an incompatiblity with the system installed svn and apr headers.
+    # We need the svn and apr headers from a brew installation of subversion.
+    # You may need to unlink the existing version of subversion installed via
+    # brew in order to configure correctly.
+    $ brew unlink subversion # (If already installed)
+    $ brew install subversion
+
+    # When configuring, the svn and apr headers from brew will be automatically
+    # detected, so no need to explicitly point to them. Also,
+    # `-Wno-deprecated-declarations` is needed to suppress warnings.
+    $ ../configure CXXFLAGS=-Wno-deprecated-declarations
+
+    # Lastly, you may encounter the following error when the libprocess tests run:
+    $ ./libprocess-tests
+    Failed to obtain the IP address for '<hostname>'; the DNS service may not be able to resolve it: nodename nor servname provided, or not known
+
+    # If so, turn on 'Remote Login' within System Preferences > Sharing to resolve the issue.
 
 *NOTE: When upgrading from Yosemite to El Capitan, make sure to rerun `xcode-select --install` after the upgrade.*
 
@@ -98,14 +137,14 @@ Following are the instructions for stock CentOS 6.6. If you are using a differen
     # 'Mesos > 0.21.0' requires 'subversion > 1.8' devel package, which is
     # not available in the default repositories.
     # Create a WANdisco SVN repo file to install the correct version:
-    $ sudo cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
+    $ sudo bash -c 'cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
     [WANdiscoSVN]
     name=WANdisco SVN Repo 1.8
     enabled=1
     baseurl=http://opensource.wandisco.com/centos/6/svn-1.8/RPMS/$basearch/
     gpgcheck=1
     gpgkey=http://opensource.wandisco.com/RPM-GPG-KEY-WANdisco
-    EOF
+    EOF'
 
     # Install essential development tools.
     $ sudo yum groupinstall -y "Development Tools"
@@ -144,14 +183,14 @@ Following are the instructions for stock CentOS 7.1. If you are using a differen
     # 'Mesos > 0.21.0' requires 'subversion > 1.8' devel package,
     # which is not available in the default repositories.
     # Create a WANdisco SVN repo file to install the correct version:
-    $ sudo cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
+    $ sudo bash -c 'cat > /etc/yum.repos.d/wandisco-svn.repo <<EOF
     [WANdiscoSVN]
     name=WANdisco SVN Repo 1.9
     enabled=1
     baseurl=http://opensource.wandisco.com/centos/7/svn-1.9/RPMS/$basearch/
     gpgcheck=1
     gpgkey=http://opensource.wandisco.com/RPM-GPG-KEY-WANdisco
-    EOF
+    EOF'
 
     # Parts of Mesos require systemd in order to operate. However, Mesos
     # only supports versions of systemd that contain the 'Delegate' flag.
@@ -169,13 +208,7 @@ Following are the instructions for stock CentOS 7.1. If you are using a differen
 
 ### Windows
 
-Following are the instructions for stock Windows 10 and Windows Server 2012 or newer.
-
-1. Install the latest version of [Visual Studio Community 2015](https://www.visualstudio.com/post-download-vs?sku=community).
-   Start Visual Studio Community to complete the setup and configuration.
-2. Install [CMake 3.5.2 or later](https://cmake.org/files/v3.5/cmake-3.5.2-win32-x86.msi).
-   Do not run CMake before finishing the Visual Studio Community setup.
-3. Install [Gnu Patch 2.5.9-7 or later](http://downloads.sourceforge.net/project/gnuwin32/patch/2.5.9-7/patch-2.5.9-7-setup.exe).
+Follow the instructions in the [Windows](windows.md) section.
 
 ## Building Mesos (Posix)
 
@@ -198,38 +231,6 @@ In order to speed up the build and reduce verbosity of the logs, you can append 
 
     # Install (Optional).
     $ make install
-
-## Building Mesos (Windows)
-
-    # Start a VS2015 x64 Native Tool command prompt.
-    # This can be found by opening VS2015 and looking under the "tools"
-    # menu for "Visual Studio Command Prompt".
-
-    # Change working directory.
-    $ cd mesos
-
-    # If you are developing on Windows, we recommend running the bootstrap.
-    # This requires administrator privileges.
-    $ .\bootstrap.bat
-
-    # Generate the solution and build.
-    $ mkdir build
-    $ cd build
-    $ cmake .. -G "Visual Studio 14 2015 Win64" -DENABLE_LIBEVENT=1
-
-    # After generating the Visual Studio solution you can use the IDE to open
-    # the project and skip the next step. In this case it is recommended to set
-    # `PreferredToolArchitecture` environment variable to `x64`.
-    # NOTE: `PreferredToolArchitecture` can be set system-wide via Control Panel.
-    $ msbuild Mesos.sln /p:PreferredToolArchitecture=x64
-
-    # mesos-agent.exe can be found in the <repository>\build\src\Debug folder.
-    $ cd src\Debug
-
-    # The Windows agent exposes new isolators that must be used as with
-    # the `--isolation` flag. To get started point the agent to a working
-    # master, using eiher an IP address or zookeeper information.
-    $ mesos-agent.exe --master=<master> --work_dir=<work folder> --isolation=windows/cpu,filesystem/windows --launcher_dir=<repository>\build\src\Debug
 
 ## Examples
 

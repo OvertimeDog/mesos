@@ -26,8 +26,12 @@
 #include <process/collect.hpp>
 #include <process/defer.hpp>
 #include <process/dispatch.hpp>
+#include <process/id.hpp>
 
 #include <mesos/docker/spec.hpp>
+
+#include "slave/containerizer/mesos/provisioner/constants.hpp"
+#include "slave/containerizer/mesos/provisioner/utils.hpp"
 
 #include "slave/containerizer/mesos/provisioner/docker/metadata_manager.hpp"
 #include "slave/containerizer/mesos/provisioner/docker/paths.hpp"
@@ -56,7 +60,8 @@ public:
       const Flags& _flags,
       const Owned<MetadataManager>& _metadataManager,
       const Owned<Puller>& _puller)
-    : flags(_flags),
+    : ProcessBase(process::ID::generate("docker-provisioner-store")),
+      flags(_flags),
       metadataManager(_metadataManager),
       puller(_puller) {}
 
@@ -257,8 +262,10 @@ Future<ImageInfo> StoreProcess::__get(const Image& image)
 
   vector<string> layerPaths;
   foreach (const string& layerId, image.layer_ids()) {
-    layerPaths.push_back(
-        paths::getImageLayerRootfsPath(flags.docker_store_dir, layerId));
+    layerPaths.push_back(paths::getImageLayerRootfsPath(
+        flags.docker_store_dir,
+        layerId,
+        flags.image_provisioner_backend));
   }
 
   // Read the manifest from the last layer because all runtime config
@@ -311,29 +318,63 @@ Future<Nothing> StoreProcess::moveLayer(
     return Nothing();
   }
 
-  const string target = paths::getImageLayerPath(
+  const string targetRootfs = paths::getImageLayerRootfsPath(
       flags.docker_store_dir,
-      layerId);
+      layerId,
+      flags.image_provisioner_backend);
 
   // NOTE: Since the layer id is supposed to be unique. If the layer
   // already exists in the store, we'll skip the moving since they are
   // expected to be the same.
-  if (os::exists(target)) {
+  if (os::exists(targetRootfs)) {
     return Nothing();
   }
 
-  Try<Nothing> mkdir = os::mkdir(target);
-  if (mkdir.isError()) {
-    return Failure(
-        "Failed to create directory in store for layer '" +
-        layerId + "': " + mkdir.error());
-  }
+  const string target = paths::getImageLayerPath(
+      flags.docker_store_dir,
+      layerId);
 
-  Try<Nothing> rename = os::rename(source, target);
-  if (rename.isError()) {
-    return Failure(
-        "Failed to move layer from '" + source +
-        "' to '" + target + "': " + rename.error());
+  const string sourceRootfs = paths::getImageLayerRootfsPath(
+      source,
+      flags.image_provisioner_backend);
+
+#ifdef __linux__
+  // If the backend is "overlay", we need to convert
+  // AUFS whiteout files to OverlayFS whiteout files.
+  if (flags.image_provisioner_backend == OVERLAY_BACKEND) {
+    Try<Nothing> convert = convertWhiteouts(sourceRootfs);
+    if (convert.isError()) {
+      return Failure(
+          "Failed to convert the whiteout files under '" +
+          sourceRootfs + "': " + convert.error());
+    }
+  }
+#endif
+
+  if (!os::exists(target)) {
+    // This is the case that we pull the layer for the first time.
+    Try<Nothing> mkdir = os::mkdir(target);
+    if (mkdir.isError()) {
+      return Failure(
+          "Failed to create directory in store for layer '" +
+          layerId + "': " + mkdir.error());
+    }
+
+    Try<Nothing> rename = os::rename(source, target);
+    if (rename.isError()) {
+      return Failure(
+          "Failed to move layer from '" + source +
+          "' to '" + target + "': " + rename.error());
+    }
+  } else {
+    // This is the case where the layer has already been pulled with a
+    // different backend.
+    Try<Nothing> rename = os::rename(sourceRootfs, targetRootfs);
+    if (rename.isError()) {
+      return Failure(
+          "Failed to move rootfs from '" + sourceRootfs +
+          "' to '" + targetRootfs + "': " + rename.error());
+    }
   }
 
   return Nothing();

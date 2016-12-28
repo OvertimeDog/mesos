@@ -15,6 +15,7 @@
 // limitations under the License.
 
 #include <set>
+#include <string>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -29,6 +30,9 @@
 #include <process/owned.hpp>
 
 #include <stout/jsonify.hpp>
+#include <stout/os/exists.hpp>
+
+#include "docker/docker.hpp"
 
 #include "master/master.hpp"
 
@@ -37,8 +41,7 @@
 #include "slave/containerizer/containerizer.hpp"
 #include "slave/containerizer/fetcher.hpp"
 
-#include "slave/containerizer/mesos/isolators/gpu/allocator.hpp"
-#include "slave/containerizer/mesos/isolators/gpu/nvml.hpp"
+#include "slave/containerizer/mesos/isolators/gpu/nvidia.hpp"
 
 #include "tests/mesos.hpp"
 
@@ -50,6 +53,7 @@ using mesos::internal::slave::Gpu;
 using mesos::internal::slave::MesosContainerizer;
 using mesos::internal::slave::MesosContainerizerProcess;
 using mesos::internal::slave::NvidiaGpuAllocator;
+using mesos::internal::slave::NvidiaVolume;
 using mesos::internal::slave::Slave;
 
 using mesos::master::detector::MasterDetector;
@@ -58,6 +62,7 @@ using process::Future;
 using process::Owned;
 
 using std::set;
+using std::string;
 using std::vector;
 
 using testing::_;
@@ -85,7 +90,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_VerifyDeviceAccess)
   // Turn on Nvidia GPU isolation.
   // Assume at least one GPU is available for isolation.
   slave::Flags flags = CreateSlaveFlags();
-  flags.isolation = "cgroups/devices,gpu/nvidia";
+  flags.isolation = "filesystem/linux,cgroups/devices,gpu/nvidia";
   flags.nvidia_gpu_devices = vector<unsigned int>({0u});
   flags.resources = "gpus:1";
 
@@ -124,7 +129,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_VerifyDeviceAccess)
 
   TaskInfo task1 = createTask(
       offers1.get()[0].slave_id(),
-      Resources::parse("cpus:0.1;mem:128;").get(),
+      Resources::parse("cpus:0.1;mem:128").get(),
       "nvidia-smi");
 
   Future<TaskStatus> statusRunning1, statusFailed1;
@@ -171,6 +176,122 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_VerifyDeviceAccess)
 }
 
 
+// This test verifies that we can enable the Nvidia GPU isolator
+// and launch tasks with restricted access to GPUs while running
+// inside one of Nvidia's images. These images have a special
+// label that indicates that we need to mount a volume containing
+// the Nvidia libraries and binaries. We first launch a task with
+// 1 GPU and verify that a call to `nvidia-smi` both succeeds and
+// reports exactly 1 GPU available. We then launch a task with
+// access to 0 GPUs and verify that a call to `nvidia-smi` fails.
+TEST_F(NvidiaGpuTest, ROOT_INTERNET_CURL_CGROUPS_NVIDIA_GPU_NvidiaDockerImage)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.isolation = "docker/runtime,filesystem/linux,"
+                    "cgroups/devices,gpu/nvidia";
+  flags.image_providers = "docker";
+  flags.nvidia_gpu_devices = vector<unsigned int>({0u});
+  flags.resources = "cpus:1;mem:128;gpus:1";
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::GPU_RESOURCES);
+
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  Future<Nothing> schedRegistered;
+  EXPECT_CALL(sched, registered(_, _, _))
+    .WillOnce(FutureSatisfy(&schedRegistered));
+
+  Future<vector<Offer>> offers1, offers2;
+  EXPECT_CALL(sched, resourceOffers(_, _))
+    .WillOnce(FutureArg<1>(&offers1))
+    .WillOnce(FutureArg<1>(&offers2))
+    .WillRepeatedly(Return());      // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(schedRegistered);
+
+  Image image;
+  image.set_type(Image::DOCKER);
+  image.mutable_docker()->set_name("nvidia/cuda");
+
+  // Launch a task requesting 1 GPU and verify
+  // that `nvidia-smi` lists exactly one GPU.
+  AWAIT_READY(offers1);
+  ASSERT_EQ(1u, offers1->size());
+
+  TaskInfo task1 = createTask(
+      offers1->at(0).slave_id(),
+      Resources::parse("cpus:1;mem:128;gpus:1").get(),
+      "NUM_GPUS=`nvidia-smi --list-gpus | wc -l`;\n"
+      "if [ \"$NUM_GPUS\" != \"1\" ]; then\n"
+      "  exit 1;\n"
+      "fi");
+
+  ContainerInfo* container = task1.mutable_container();
+  container->set_type(ContainerInfo::MESOS);
+  container->mutable_mesos()->mutable_image()->CopyFrom(image);
+
+  Future<TaskStatus> statusRunning1, statusFinished1;
+  EXPECT_CALL(sched, statusUpdate(_, _))
+    .WillOnce(FutureArg<1>(&statusRunning1))
+    .WillOnce(FutureArg<1>(&statusFinished1));
+
+  driver.launchTasks(offers1->at(0).id(), {task1});
+
+  // We wait wait up to 120 seconds
+  // to download the docker image.
+  AWAIT_READY_FOR(statusRunning1, Seconds(120));
+  ASSERT_EQ(TASK_RUNNING, statusRunning1->state());
+
+  AWAIT_READY(statusFinished1);
+  ASSERT_EQ(TASK_FINISHED, statusFinished1->state());
+
+  // Launch a task requesting no GPUs and
+  // verify that running `nvidia-smi` fails.
+  AWAIT_READY(offers2);
+  EXPECT_EQ(1u, offers2->size());
+
+  TaskInfo task2 = createTask(
+      offers2->at(0).slave_id(),
+      Resources::parse("cpus:1;mem:128").get(),
+      "nvidia-smi");
+
+  container = task2.mutable_container();
+  container->set_type(ContainerInfo::MESOS);
+  container->mutable_mesos()->mutable_image()->CopyFrom(image);
+
+  Future<TaskStatus> statusRunning2, statusFailed2;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusRunning2))
+    .WillOnce(FutureArg<1>(&statusFailed2));
+
+  driver.launchTasks(offers2->at(0).id(), {task2});
+
+  AWAIT_READY_FOR(statusRunning2, Seconds(120));
+  ASSERT_EQ(TASK_RUNNING, statusRunning2->state());
+
+  AWAIT_READY(statusFailed2);
+  ASSERT_EQ(TASK_FAILED, statusFailed2->state());
+
+  driver.stop();
+  driver.join();
+}
+
+
 // This test verifies correct failure semantics when
 // a task requests a fractional number of GPUs.
 TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FractionalResources)
@@ -181,7 +302,7 @@ TEST_F(NvidiaGpuTest, ROOT_CGROUPS_NVIDIA_GPU_FractionalResources)
   // Turn on Nvidia GPU isolation.
   // Assume at least one GPU is available for isolation.
   slave::Flags flags = CreateSlaveFlags();
-  flags.isolation = "cgroups/devices,gpu/nvidia";
+  flags.isolation = "filesystem/linux,cgroups/devices,gpu/nvidia";
   flags.nvidia_gpu_devices = vector<unsigned int>({0u});
   flags.resources = "gpus:1";
 
@@ -460,6 +581,72 @@ TEST_F(NvidiaGpuTest, NVIDIA_GPU_Allocator)
 
   // Attempt to allocate a bogus GPU.
   AWAIT_FAILED(allocator->allocate({ bogus }));
+}
+
+
+// Tests that we can create the volume that consolidates
+// the Nvidia libraries and binaries.
+TEST_F(NvidiaGpuTest, ROOT_NVIDIA_GPU_VolumeCreation)
+{
+  Try<NvidiaVolume> volume = NvidiaVolume::create();
+  ASSERT_SOME(volume);
+
+  ASSERT_TRUE(os::exists(volume->HOST_PATH()));
+
+  vector<string> directories = { "bin", "lib", "lib64" };
+  foreach (const string& directory, directories) {
+    EXPECT_TRUE(os::exists(volume->HOST_PATH() + "/" + directory));
+  }
+
+  EXPECT_TRUE(os::exists(volume->HOST_PATH() + "/bin/nvidia-smi"));
+  EXPECT_TRUE(os::exists(volume->HOST_PATH() + "/lib64/libnvidia-ml.so.1"));
+}
+
+
+// Tests that we can properly detect when an Nvidia volume should be
+// injected into a Docker container given its ImageManifest.
+TEST_F(NvidiaGpuTest, ROOT_NVIDIA_GPU_VolumeShouldInject)
+{
+  Try<JSON::Object> json = JSON::parse<JSON::Object>(
+      R"~(
+      {
+        "config": {
+          "Labels": {
+            "com.nvidia.volumes.needed": "nvidia_driver"
+          }
+        }
+      })~");
+
+  ASSERT_SOME(json);
+
+  Try<::docker::spec::v1::ImageManifest> manifest =
+    ::docker::spec::v1::parse(json.get());
+  ASSERT_SOME(manifest);
+
+  Try<NvidiaVolume> volume = NvidiaVolume::create();
+  ASSERT_SOME(volume);
+
+  ASSERT_TRUE(volume->shouldInject(manifest.get()));
+
+  json = JSON::parse<JSON::Object>(
+      R"~(
+      {
+        "config": {
+          "Labels": {
+            "com.ati.volumes.needed": "ati_driver"
+          }
+        }
+      })~");
+
+  ASSERT_SOME(json);
+
+  manifest = ::docker::spec::v1::parse(json.get());
+  ASSERT_SOME(manifest);
+
+  volume = NvidiaVolume::create();
+  ASSERT_SOME(volume);
+
+  ASSERT_FALSE(volume->shouldInject(manifest.get()));
 }
 
 } // namespace tests {

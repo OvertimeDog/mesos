@@ -50,6 +50,7 @@
 #include "tests/containerizer.hpp"
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
+#include "tests/mock_docker.hpp"
 
 using namespace mesos::modules;
 
@@ -65,6 +66,7 @@ using mesos::internal::slave::Slave;
 using mesos::master::detector::MasterDetector;
 
 using mesos::slave::ContainerLogger;
+using mesos::slave::ContainerTermination;
 
 using process::Clock;
 using process::Future;
@@ -121,7 +123,7 @@ protected:
 
 
 // Test varioud hook install/uninstall mechanisms.
-TEST_F(HookTest, HookLoading)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, HookLoading)
 {
   // Installing unknown hooks should fail.
   EXPECT_ERROR(HookManager::initialize("Unknown Hook"));
@@ -144,7 +146,7 @@ TEST_F(HookTest, HookLoading)
 
 // Test that the label decorator hook hangs a new label off the
 // taskinfo message during master launch task.
-TEST_F(HookTest, VerifyMasterLaunchTaskHook)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, VerifyMasterLaunchTaskHook)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -227,7 +229,7 @@ TEST_F(HookTest, VerifyMasterLaunchTaskHook)
 // This test forces a `SlaveLost` event. When this happens, we expect the
 // `masterSlaveLostHook` to be invoked and await an internal libprocess event
 // to trigger in the module code.
-TEST_F(HookTest, MasterSlaveLostHookTest)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, MasterSlaveLostHookTest)
 {
   Future<HookExecuted> hookFuture = FUTURE_PROTOBUF(HookExecuted(), _, _);
 
@@ -278,7 +280,9 @@ TEST_F(HookTest, MasterSlaveLostHookTest)
 // Test hook adds a new environment variable "FOO" to the executor
 // with a value "bar". We validate the hook by verifying the value
 // of this environment variable.
-TEST_F(HookTest, VerifySlaveExecutorEnvironmentDecorator)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    HookTest,
+    VerifySlaveExecutorEnvironmentDecorator)
 {
   const string& directory = os::getcwd(); // We're inside a temporary sandbox.
   Fetcher fetcher;
@@ -292,35 +296,53 @@ TEST_F(HookTest, VerifySlaveExecutorEnvironmentDecorator)
   ContainerID containerId;
   containerId.set_value("test_container");
 
+  ExecutorInfo executorInfo = createExecutorInfo(
+      "executor",
+      "test $FOO = 'bar'");
+
+  SlaveID slaveId = SlaveID();
+
+  std::map<string, string> environment = executorEnvironment(
+      CreateSlaveFlags(),
+      executorInfo,
+      directory,
+      slaveId,
+      PID<Slave>(),
+      false);
+
   // Test hook adds a new environment variable "FOO" to the executor
   // with a value "bar". A '0' (success) exit status for the following
   // command validates the hook.
   process::Future<bool> launch = containerizer->launch(
       containerId,
-      CREATE_EXECUTOR_INFO("executor", "test $FOO = 'bar'"),
+      None(),
+      executorInfo,
       directory,
       None(),
-      SlaveID(),
-      process::PID<Slave>(),
+      slaveId,
+      environment,
       false);
+
   AWAIT_READY(launch);
   ASSERT_TRUE(launch.get());
 
   // Wait on the container.
-  process::Future<containerizer::Termination> wait =
+  Future<Option<ContainerTermination>> wait =
     containerizer->wait(containerId);
+
   AWAIT_READY(wait);
+  ASSERT_SOME(wait.get());
 
   // Check the executor exited correctly.
-  EXPECT_TRUE(wait.get().has_status());
-  EXPECT_EQ(0, wait.get().status());
+  EXPECT_TRUE(wait->get().has_status());
+  EXPECT_EQ(0, wait->get().status());
 }
 
 
 // Test executor environment decorator hook and remove executor hook
 // for slave. We expect the environment-decorator hook to create a
 // temporary file and the remove-executor hook to delete that file.
-TEST_F(HookTest, VerifySlaveLaunchExecutorHook)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, VerifySlaveLaunchExecutorHook)
 {
   master::Flags masterFlags = CreateMasterFlags();
 
@@ -369,7 +391,7 @@ TEST_F(HookTest, VerifySlaveLaunchExecutorHook)
   // remove-executor hook.
   Future<Nothing> shutdown;
   EXPECT_CALL(exec, shutdown(_))
-    .WillOnce(FutureSatisfy(&shutdown));;
+    .WillOnce(FutureSatisfy(&shutdown));
 
   Future<TaskStatus> status;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
@@ -405,7 +427,7 @@ TEST_F(HookTest, VerifySlaveLaunchExecutorHook)
 // with two labels ("foo":"bar" and "bar":"baz") is launched and will
 // get modified by the slave hook to strip the "foo":"bar" pair and
 // add a new "baz":"qux" pair.
-TEST_F(HookTest, VerifySlaveRunTaskHook)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, VerifySlaveRunTaskHook)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -494,7 +516,7 @@ TEST_F(HookTest, VerifySlaveRunTaskHook)
 // "bar":"baz") is sent from the executor. The labels get modified by
 // the slave hook to strip the "foo":"bar" pair and/ add a new
 // "baz":"qux" pair.
-TEST_F(HookTest, VerifySlaveTaskStatusDecorator)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(HookTest, VerifySlaveTaskStatusDecorator)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -613,8 +635,8 @@ TEST_F(HookTest, VerifySlaveTaskStatusDecorator)
 
 
 // This test verifies that the slave pre-launch docker environment
-// decorator can attach environment variables to a task.
-TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerEnvironmentDecorator)
+// decorator can attach environment variables to a task exclusively.
+TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerTaskExecutorDecorator)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -661,9 +683,11 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerEnvironmentDecorator)
   AWAIT_READY(offers);
   ASSERT_EQ(1u, offers.get().size());
 
+  // The task should see `HOOKTEST_TASK` but not `HOOKTEST_EXECUTOR`.
   TaskInfo task = createTask(
       offers.get()[0],
-      "test \"$FOO_DOCKER\" = 'docker_bar'");
+      "test \"$HOOKTEST_TASK\" = 'foo' && "
+      "test ! \"$HOOKTEST_EXECUTOR\" = 'bar'");
 
   ContainerInfo containerInfo;
   containerInfo.set_type(ContainerInfo::DOCKER);
@@ -696,13 +720,14 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerEnvironmentDecorator)
   AWAIT_READY_FOR(statusFinished, Seconds(60));
   EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     containerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   Future<list<Docker::Container>> containers =
     docker.get()->ps(true, slave::DOCKER_NAME_PREFIX);
@@ -912,13 +937,14 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePreLaunchDockerHook)
   AWAIT_READY_FOR(statusFinished, Seconds(60));
   EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     containerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   Future<list<Docker::Container>> containers =
     docker.get()->ps(true, slave::DOCKER_NAME_PREFIX);
@@ -1046,7 +1072,9 @@ TEST_F(HookTest, ROOT_DOCKER_VerifySlavePostFetchHook)
 
 // Test that the changes made by the resources decorator hook are correctly
 // propagated to the resource offer.
-TEST_F(HookTest, VerifySlaveResourcesAndAttributesDecorator)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    HookTest,
+    VerifySlaveResourcesAndAttributesDecorator)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);

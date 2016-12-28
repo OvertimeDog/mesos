@@ -212,23 +212,10 @@ protected:
 };
 
 
-class RegistrarTest : public RegistrarTestBase,
-                      public WithParamInterface<bool>
-{
-protected:
-  virtual void SetUp()
-  {
-    RegistrarTestBase::SetUp();
-    flags.registry_strict = GetParam();
-  }
-};
+class RegistrarTest : public RegistrarTestBase {};
 
 
-// The Registrar tests are parameterized by "strictness".
-INSTANTIATE_TEST_CASE_P(Strict, RegistrarTest, ::testing::Bool());
-
-
-TEST_P(RegistrarTest, Recover)
+TEST_F(RegistrarTest, Recover)
 {
   Registrar registrar(flags, state);
 
@@ -236,7 +223,11 @@ TEST_P(RegistrarTest, Recover)
   AWAIT_EXPECT_FAILED(
       registrar.apply(Owned<Operation>(new AdmitSlave(slave))));
   AWAIT_EXPECT_FAILED(
-      registrar.apply(Owned<Operation>(new ReadmitSlave(slave))));
+      registrar.apply(
+          Owned<Operation>(
+              new MarkSlaveUnreachable(slave, protobuf::getCurrentTime()))));
+  AWAIT_EXPECT_FAILED(
+      registrar.apply(Owned<Operation>(new MarkSlaveReachable(slave))));
   AWAIT_EXPECT_FAILED(
       registrar.apply(Owned<Operation>(new RemoveSlave(slave))));
 
@@ -246,8 +237,11 @@ TEST_P(RegistrarTest, Recover)
   // operations to ensure they do not fail.
   Future<bool> admit = registrar.apply(
       Owned<Operation>(new AdmitSlave(slave)));
-  Future<bool> readmit = registrar.apply(
-      Owned<Operation>(new ReadmitSlave(slave)));
+  Future<bool> unreachable = registrar.apply(
+      Owned<Operation>(
+          new MarkSlaveUnreachable(slave, protobuf::getCurrentTime())));
+  Future<bool> reachable = registrar.apply(
+      Owned<Operation>(new MarkSlaveReachable(slave)));
   Future<bool> remove = registrar.apply(
       Owned<Operation>(new RemoveSlave(slave)));
 
@@ -255,27 +249,23 @@ TEST_P(RegistrarTest, Recover)
   EXPECT_EQ(master, registry.get().master().info());
 
   AWAIT_TRUE(admit);
-  AWAIT_TRUE(readmit);
+  AWAIT_TRUE(unreachable);
+  AWAIT_TRUE(reachable);
   AWAIT_TRUE(remove);
 }
 
 
-TEST_P(RegistrarTest, Admit)
+TEST_F(RegistrarTest, Admit)
 {
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
 
   AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(slave))));
-
-  if (flags.registry_strict) {
-    AWAIT_FALSE(registrar.apply(Owned<Operation>(new AdmitSlave(slave))));
-  } else {
-    AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(slave))));
-  }
+  AWAIT_FALSE(registrar.apply(Owned<Operation>(new AdmitSlave(slave))));
 }
 
 
-TEST_P(RegistrarTest, Readmit)
+TEST_F(RegistrarTest, MarkReachable)
 {
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
@@ -296,17 +286,107 @@ TEST_P(RegistrarTest, Readmit)
 
   AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(info1))));
 
-  AWAIT_TRUE(registrar.apply(Owned<Operation>(new ReadmitSlave(info1))));
+  // Attempting to mark a slave as reachable that is already reachable
+  // should not result in an error.
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new MarkSlaveReachable(info1))));
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new MarkSlaveReachable(info1))));
 
-  if (flags.registry_strict) {
-    AWAIT_FALSE(registrar.apply(Owned<Operation>(new ReadmitSlave(info2))));
-  } else {
-    AWAIT_TRUE(registrar.apply(Owned<Operation>(new ReadmitSlave(info2))));
-  }
+  // Attempting to mark a slave as reachable that is not in the
+  // unreachable list should not result in error.
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new MarkSlaveReachable(info2))));
 }
 
 
-TEST_P(RegistrarTest, Remove)
+TEST_F(RegistrarTest, MarkUnreachable)
+{
+  Registrar registrar(flags, state);
+  AWAIT_READY(registrar.recover(master));
+
+  SlaveInfo info1;
+  info1.set_hostname("localhost");
+
+  SlaveID id1;
+  id1.set_value("1");
+  info1.mutable_id()->CopyFrom(id1);
+
+  SlaveID id2;
+  id2.set_value("2");
+
+  SlaveInfo info2;
+  info2.set_hostname("localhost");
+  info2.mutable_id()->CopyFrom(id2);
+
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(info1))));
+
+  AWAIT_TRUE(
+      registrar.apply(
+          Owned<Operation>(
+              new MarkSlaveUnreachable(info1, protobuf::getCurrentTime()))));
+
+  AWAIT_TRUE(
+      registrar.apply(Owned<Operation>(new MarkSlaveReachable(info1))));
+
+  AWAIT_TRUE(
+      registrar.apply(
+          Owned<Operation>(
+              new MarkSlaveUnreachable(info1, protobuf::getCurrentTime()))));
+
+  // If a slave is already unreachable, trying to mark it unreachable
+  // again should fail.
+  AWAIT_FALSE(
+      registrar.apply(
+          Owned<Operation>(
+              new MarkSlaveUnreachable(info1, protobuf::getCurrentTime()))));
+}
+
+
+TEST_F(RegistrarTest, PruneUnreachable)
+{
+  Registrar registrar(flags, state);
+  AWAIT_READY(registrar.recover(master));
+
+  SlaveInfo info1;
+  info1.set_hostname("localhost");
+
+  SlaveID id1;
+  id1.set_value("1");
+  info1.mutable_id()->CopyFrom(id1);
+
+  SlaveID id2;
+  id2.set_value("2");
+
+  SlaveInfo info2;
+  info2.set_hostname("localhost");
+  info2.mutable_id()->CopyFrom(id2);
+
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(info1))));
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(info2))));
+
+  AWAIT_TRUE(
+      registrar.apply(
+          Owned<Operation>(
+              new MarkSlaveUnreachable(info1, protobuf::getCurrentTime()))));
+
+  AWAIT_TRUE(
+      registrar.apply(
+          Owned<Operation>(
+              new MarkSlaveUnreachable(info2, protobuf::getCurrentTime()))));
+
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new PruneUnreachable({id1}))));
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new PruneUnreachable({id2}))));
+
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(info1))));
+
+  AWAIT_TRUE(
+      registrar.apply(
+          Owned<Operation>(
+              new MarkSlaveUnreachable(info1, protobuf::getCurrentTime()))));
+
+  AWAIT_TRUE(registrar.apply(Owned<Operation>(new PruneUnreachable({id1}))));
+}
+
+
+TEST_F(RegistrarTest, Remove)
 {
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
@@ -338,29 +418,17 @@ TEST_P(RegistrarTest, Remove)
 
   AWAIT_TRUE(registrar.apply(Owned<Operation>(new RemoveSlave(info1))));
 
-  if (flags.registry_strict) {
-    AWAIT_FALSE(registrar.apply(Owned<Operation>(new RemoveSlave(info1))));
-  } else {
-    AWAIT_TRUE(registrar.apply(Owned<Operation>(new RemoveSlave(info1))));
-  }
+  AWAIT_FALSE(registrar.apply(Owned<Operation>(new RemoveSlave(info1))));
 
   AWAIT_TRUE(registrar.apply(Owned<Operation>(new AdmitSlave(info1))));
 
   AWAIT_TRUE(registrar.apply(Owned<Operation>(new RemoveSlave(info2))));
 
-  if (flags.registry_strict) {
-    AWAIT_FALSE(registrar.apply(Owned<Operation>(new RemoveSlave(info2))));
-  } else {
-    AWAIT_TRUE(registrar.apply(Owned<Operation>(new RemoveSlave(info2))));
-  }
+  AWAIT_FALSE(registrar.apply(Owned<Operation>(new RemoveSlave(info2))));
 
   AWAIT_TRUE(registrar.apply(Owned<Operation>(new RemoveSlave(info3))));
 
-  if (flags.registry_strict) {
-    AWAIT_FALSE(registrar.apply(Owned<Operation>(new RemoveSlave(info3))));
-  } else {
-    AWAIT_TRUE(registrar.apply(Owned<Operation>(new RemoveSlave(info3))));
-  }
+  AWAIT_FALSE(registrar.apply(Owned<Operation>(new RemoveSlave(info3))));
 }
 
 
@@ -379,7 +447,7 @@ TEST_P(RegistrarTest, Remove)
 
 // Adds maintenance schedules to the registry, one machine at a time.
 // Then removes machines from the schedule.
-TEST_P(RegistrarTest, UpdateMaintenanceSchedule)
+TEST_F(RegistrarTest, UpdateMaintenanceSchedule)
 {
   // Machine definitions used in this test.
   MachineID machine1;
@@ -538,7 +606,7 @@ TEST_P(RegistrarTest, UpdateMaintenanceSchedule)
 
 
 // Creates a schedule and properly starts maintenance.
-TEST_P(RegistrarTest, StartMaintenance)
+TEST_F(RegistrarTest, StartMaintenance)
 {
   // Machine definitions used in this test.
   MachineID machine1;
@@ -625,7 +693,7 @@ TEST_P(RegistrarTest, StartMaintenance)
 
 
 // Creates a schedule and properly starts and stops maintenance.
-TEST_P(RegistrarTest, StopMaintenance)
+TEST_F(RegistrarTest, StopMaintenance)
 {
   // Machine definitions used in this test.
   MachineID machine1;
@@ -707,7 +775,7 @@ TEST_P(RegistrarTest, StopMaintenance)
 
 
 // Tests that adding and updating quotas in the registry works properly.
-TEST_P(RegistrarTest, UpdateQuota)
+TEST_F(RegistrarTest, UpdateQuota)
 {
   const string ROLE1 = "role1";
   const string ROLE2 = "role2";
@@ -834,7 +902,7 @@ TEST_P(RegistrarTest, UpdateQuota)
 
 
 // Tests removing quotas from the registry.
-TEST_P(RegistrarTest, RemoveQuota)
+TEST_F(RegistrarTest, RemoveQuota)
 {
   const string ROLE1 = "role1";
   const string ROLE2 = "role2";
@@ -912,7 +980,7 @@ TEST_P(RegistrarTest, RemoveQuota)
 
 
 // Tests that updating weights in the registry works properly.
-TEST_P(RegistrarTest, UpdateWeights)
+TEST_F(RegistrarTest, UpdateWeights)
 {
   const string ROLE1 = "role1";
   double WEIGHT1 = 2.0;
@@ -975,22 +1043,19 @@ TEST_P(RegistrarTest, UpdateWeights)
 }
 
 
-TEST_P(RegistrarTest, Bootstrap)
+TEST_F(RegistrarTest, Bootstrap)
 {
-  // Run 1 readmits a slave that is not present.
+  // Run 1 simulates the reregistration of a slave that is not present
+  // in the registry.
   {
     Registrar registrar(flags, state);
     AWAIT_READY(registrar.recover(master));
 
-    // If not strict, we should be allowed to readmit the slave.
-    if (flags.registry_strict) {
-      AWAIT_FALSE(registrar.apply(Owned<Operation>(new ReadmitSlave(slave))));
-    } else {
-      AWAIT_TRUE(registrar.apply(Owned<Operation>(new ReadmitSlave(slave))));
-    }
+    AWAIT_TRUE(
+        registrar.apply(Owned<Operation>(new MarkSlaveReachable(slave))));
   }
 
-  // Run 2 should see the slave if not strict.
+  // Run 2 should see the slave.
   {
     Registrar registrar(flags, state);
 
@@ -998,12 +1063,8 @@ TEST_P(RegistrarTest, Bootstrap)
 
     AWAIT_READY(registry);
 
-    if (flags.registry_strict) {
-      EXPECT_EQ(0, registry.get().slaves().slaves().size());
-    } else {
-      ASSERT_EQ(1, registry.get().slaves().slaves().size());
-      EXPECT_EQ(slave, registry.get().slaves().slaves(0).info());
-    }
+    ASSERT_EQ(1, registry.get().slaves().slaves().size());
+    EXPECT_EQ(slave, registry.get().slaves().slaves(0).info());
   }
 }
 
@@ -1011,14 +1072,14 @@ TEST_P(RegistrarTest, Bootstrap)
 class MockStorage : public Storage
 {
 public:
-  MOCK_METHOD1(get, Future<Option<Entry> >(const string&));
+  MOCK_METHOD1(get, Future<Option<Entry>>(const string&));
   MOCK_METHOD2(set, Future<bool>(const Entry&, const UUID&));
   MOCK_METHOD1(expunge, Future<bool>(const Entry&));
   MOCK_METHOD0(names, Future<std::set<string>>());
 };
 
 
-TEST_P(RegistrarTest, FetchTimeout)
+TEST_F(RegistrarTest, FetchTimeout)
 {
   Clock::pause();
 
@@ -1028,7 +1089,7 @@ TEST_P(RegistrarTest, FetchTimeout)
   Future<Nothing> get;
   EXPECT_CALL(storage, get(_))
     .WillOnce(DoAll(FutureSatisfy(&get),
-                    Return(Future<Option<Entry> >())));
+                    Return(Future<Option<Entry>>())));
 
   Registrar registrar(flags, &state);
 
@@ -1047,7 +1108,7 @@ TEST_P(RegistrarTest, FetchTimeout)
 }
 
 
-TEST_P(RegistrarTest, StoreTimeout)
+TEST_F(RegistrarTest, StoreTimeout)
 {
   Clock::pause();
 
@@ -1079,7 +1140,7 @@ TEST_P(RegistrarTest, StoreTimeout)
 }
 
 
-TEST_P(RegistrarTest, Abort)
+TEST_F(RegistrarTest, Abort)
 {
   MockStorage storage;
   State state(&storage);
@@ -1106,7 +1167,7 @@ TEST_P(RegistrarTest, Abort)
 
 // Tests that requests to the '/registry' endpoint are authenticated when HTTP
 // authentication is enabled.
-TEST_P(RegistrarTest, Authentication)
+TEST_F(RegistrarTest, Authentication)
 {
   const string AUTHENTICATION_REALM = "realm";
 
@@ -1172,8 +1233,6 @@ TEST_P(Registrar_BENCHMARK_Test, Performance)
   Registrar registrar(flags, state);
   AWAIT_READY(registrar.recover(master));
 
-  vector<SlaveInfo> infos;
-
   Attributes attributes = Attributes::parse("foo:bar;baz:quux");
   Resources resources =
     Resources::parse("cpus(*):1.0;mem(*):512;disk(*):2048").get();
@@ -1181,6 +1240,7 @@ TEST_P(Registrar_BENCHMARK_Test, Performance)
   size_t slaveCount = GetParam();
 
   // Create slaves.
+  vector<SlaveInfo> infos;
   for (size_t i = 0; i < slaveCount; ++i) {
     // Simulate real slave information.
     SlaveInfo info;
@@ -1206,13 +1266,16 @@ TEST_P(Registrar_BENCHMARK_Test, Performance)
   // same as in production).
   std::random_shuffle(infos.begin(), infos.end());
 
-  // Readmit slaves.
+  // Mark slaves reachable again. This simulates the master failing
+  // over, and then the previously registered agents reregistering
+  // with the new master.
   watch.start();
   foreach (const SlaveInfo& info, infos) {
-    result = registrar.apply(Owned<Operation>(new ReadmitSlave(info)));
+    result = registrar.apply(Owned<Operation>(new MarkSlaveReachable(info)));
   }
   AWAIT_READY_FOR(result, Minutes(5));
-  LOG(INFO) << "Readmitted " << slaveCount << " agents in " << watch.elapsed();
+  LOG(INFO) << "Marked " << slaveCount
+            << " agents reachable in " << watch.elapsed();
 
   // Recover slaves.
   Registrar registrar2(flags, state);
@@ -1237,6 +1300,144 @@ TEST_P(Registrar_BENCHMARK_Test, Performance)
   }
   AWAIT_READY_FOR(result, Minutes(5));
   cout << "Removed " << slaveCount << " agents in " << watch.elapsed() << endl;
+}
+
+
+// Test the performance of marking all registered slaves unreachable,
+// then marking them reachable again. This might occur if there is a
+// network partition and then the partition heals.
+TEST_P(Registrar_BENCHMARK_Test, MarkUnreachableThenReachable)
+{
+  Registrar registrar(flags, state);
+  AWAIT_READY(registrar.recover(master));
+
+  Attributes attributes = Attributes::parse("foo:bar;baz:quux");
+  Resources resources =
+    Resources::parse("cpus(*):1.0;mem(*):512;disk(*):2048").get();
+
+  size_t slaveCount = GetParam();
+
+  // Create slaves.
+  vector<SlaveInfo> infos;
+  for (size_t i = 0; i < slaveCount; ++i) {
+    // Simulate real slave information.
+    SlaveInfo info;
+    info.set_hostname("localhost");
+    info.mutable_id()->set_value(
+        string("201310101658-2280333834-5050-48574-") + stringify(i));
+    info.mutable_resources()->MergeFrom(resources);
+    info.mutable_attributes()->MergeFrom(attributes);
+    infos.push_back(info);
+  }
+
+  // Admit slaves.
+  Stopwatch watch;
+  watch.start();
+  Future<bool> result;
+  foreach (const SlaveInfo& info, infos) {
+    result = registrar.apply(Owned<Operation>(new AdmitSlave(info)));
+  }
+  AWAIT_READY_FOR(result, Minutes(5));
+  LOG(INFO) << "Admitted " << slaveCount << " agents in " << watch.elapsed();
+
+  // Shuffle the slaves so that we mark them unreachable in random
+  // order (same as in production).
+  std::random_shuffle(infos.begin(), infos.end());
+
+  // Mark all slaves unreachable.
+  TimeInfo unreachableTime = protobuf::getCurrentTime();
+
+  watch.start();
+  foreach (const SlaveInfo& info, infos) {
+    result = registrar.apply(
+        Owned<Operation>(new MarkSlaveUnreachable(info, unreachableTime)));
+  }
+  AWAIT_READY_FOR(result, Minutes(5));
+  cout << "Marked " << slaveCount << " agents unreachable in "
+       << watch.elapsed() << endl;
+
+  // Shuffles the slaves again so that we mark them reachable in
+  // random order (same as in production).
+  std::random_shuffle(infos.begin(), infos.end());
+
+  // Mark all slaves reachable.
+  watch.start();
+  foreach (const SlaveInfo& info, infos) {
+    result = registrar.apply(
+        Owned<Operation>(new MarkSlaveReachable(info)));
+  }
+  AWAIT_READY_FOR(result, Minutes(5));
+  cout << "Marked " << slaveCount << " agents reachable in "
+       << watch.elapsed() << endl;
+}
+
+
+// Test the performance of garbage collecting a large portion of the
+// unreachable list in a single operation. We use a fixed percentage
+// at the moment (50%).
+TEST_P(Registrar_BENCHMARK_Test, GcManyAgents)
+{
+  Registrar registrar(flags, state);
+  AWAIT_READY(registrar.recover(master));
+
+  Attributes attributes = Attributes::parse("foo:bar;baz:quux");
+  Resources resources =
+    Resources::parse("cpus(*):1.0;mem(*):512;disk(*):2048").get();
+
+  size_t slaveCount = GetParam();
+
+  // Create slaves.
+  vector<SlaveInfo> infos;
+  for (size_t i = 0; i < slaveCount; ++i) {
+    // Simulate real slave information.
+    SlaveInfo info;
+    info.set_hostname("localhost");
+    info.mutable_id()->set_value(
+        string("201310101658-2280333834-5050-48574-") + stringify(i));
+    info.mutable_resources()->MergeFrom(resources);
+    info.mutable_attributes()->MergeFrom(attributes);
+    infos.push_back(info);
+  }
+
+  // Admit slaves.
+  Stopwatch watch;
+  watch.start();
+  Future<bool> result;
+  foreach (const SlaveInfo& info, infos) {
+    result = registrar.apply(Owned<Operation>(new AdmitSlave(info)));
+  }
+  AWAIT_READY_FOR(result, Minutes(5));
+  LOG(INFO) << "Admitted " << slaveCount << " agents in " << watch.elapsed();
+
+  // Shuffle the slaves so that we mark them unreachable in random
+  // order (same as in production).
+  std::random_shuffle(infos.begin(), infos.end());
+
+  // Mark all slaves unreachable.
+  TimeInfo unreachableTime = protobuf::getCurrentTime();
+
+  watch.start();
+  foreach (const SlaveInfo& info, infos) {
+    result = registrar.apply(
+        Owned<Operation>(new MarkSlaveUnreachable(info, unreachableTime)));
+  }
+  AWAIT_READY_FOR(result, Minutes(5));
+  LOG(INFO) << "Marked " << slaveCount << " agents unreachable in "
+            << watch.elapsed() << endl;
+
+  // Prepare to GC the first half of the unreachable list.
+  hashset<SlaveID> toRemove;
+  for (size_t i = 0; (i * 2) < slaveCount; i++) {
+    const SlaveInfo& info = infos[i];
+    toRemove.insert(info.id());
+  }
+
+  // Do GC.
+  watch.start();
+  result = registrar.apply(Owned<Operation>(new PruneUnreachable(toRemove)));
+  AWAIT_READY_FOR(result, Minutes(5));
+  cout << "Garbage collected " << toRemove.size() << " agents in "
+       << watch.elapsed() << endl;
 }
 
 } // namespace tests {

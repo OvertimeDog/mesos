@@ -19,6 +19,7 @@
 set(STOUT ${MESOS_3RDPARTY_SRC}/stout)
 
 EXTERNAL("boost"       ${BOOST_VERSION}       "${MESOS_3RDPARTY_BIN}")
+EXTERNAL("elfio"       ${ELFIO_VERSION}       "${MESOS_3RDPARTY_BIN}")
 EXTERNAL("picojson"    ${PICOJSON_VERSION}    "${MESOS_3RDPARTY_BIN}")
 EXTERNAL("http_parser" ${HTTP_PARSER_VERSION} "${MESOS_3RDPARTY_BIN}")
 EXTERNAL("libev"       ${LIBEV_VERSION}       "${MESOS_3RDPARTY_BIN}")
@@ -53,6 +54,7 @@ set(PROCESS_INCLUDE_DIR     ${MESOS_3RDPARTY_SRC}/libprocess/include)
 set(STOUT_INCLUDE_DIR       ${STOUT}/include)
 
 set(BOOST_INCLUDE_DIR       ${BOOST_ROOT})
+set(ELFIO_INCLUDE_DIR       ${ELFIO_ROOT})
 set(GPERFTOOLS_INCLUDE_DIR  ${GPERFTOOLS}/src)
 set(HTTP_PARSER_INCLUDE_DIR ${HTTP_PARSER_ROOT})
 set(LIBEV_INCLUDE_DIR       ${LIBEV_ROOT})
@@ -60,6 +62,7 @@ set(NVML_INCLUDE_DIR        ${NVML_ROOT})
 set(PICOJSON_INCLUDE_DIR    ${PICOJSON_ROOT})
 
 if (WIN32)
+  set(APR_INCLUDE_DIR      ${LIBAPR_ROOT}/include ${LIBAPR_ROOT}-build)
   set(CURL_INCLUDE_DIR     ${CURL_ROOT}/include)
   set(GLOG_INCLUDE_DIR     ${GLOG_ROOT}/src/windows)
   set(PROTOBUF_INCLUDE_DIR ${PROTOBUF_ROOT}/src)
@@ -126,46 +129,3 @@ endif (NOT WIN32)
 #######################################################################
 include(StoutConfigure)
 include(ProcessConfigure)
-
-# DEFINE MESOS BUILD TARGETS.
-#############################
-
-# Define target for agent.
-set(
-  AGENT_TARGET mesos-agent
-  CACHE STRING "Target we use to refer to agent executable")
-
-# Define target for containerizer.
-set(
-  MESOS_CONTAINERIZER mesos-containerizer
-  CACHE STRING "Target for containerizer")
-
-# Define target for executor.
-set(
-  MESOS_EXECUTOR mesos-executor
-  CACHE STRING "Target for executor")
-
-# Define target for fetcher.
-set(
-  MESOS_FETCHER mesos-fetcher
-  CACHE STRING "Target for fetcher")
-
-# Define target for health-check.
-set(
-  MESOS_HEALTH_CHECK mesos-health-check
-  CACHE STRING "Target for healt-check")
-
-# Define target for health-master.
-set(
-  MESOS_MASTER mesos-master
-  CACHE STRING "Target for master")
-
-# Define target for usage.
-set(
-  MESOS_USAGE mesos-usage
-  CACHE STRING "Target for usage")
-
-# Define target for docker.
-set(
-  MESOS_DOCKER_EXECUTOR mesos-docker-executor
-  CACHE STRING "Target for docker executor")

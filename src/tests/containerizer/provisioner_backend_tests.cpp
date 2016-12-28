@@ -33,11 +33,18 @@
 #include "slave/containerizer/mesos/provisioner/backends/copy.hpp"
 #include "slave/containerizer/mesos/provisioner/backends/overlay.hpp"
 
+#include "slave/containerizer/mesos/provisioner/constants.hpp"
+
 #include "tests/flags.hpp"
 
 using namespace process;
 
 using namespace mesos::internal::slave;
+
+using mesos::internal::slave::AUFS_BACKEND;
+using mesos::internal::slave::BIND_BACKEND;
+using mesos::internal::slave::COPY_BACKEND;
+using mesos::internal::slave::OVERLAY_BACKEND;
 
 using std::string;
 using std::vector;
@@ -89,9 +96,9 @@ TEST_F(OverlayBackendTest, ROOT_OVERLAYFS_OverlayFSBackend)
   string rootfs = path::join(os::getcwd(), "rootfs");
 
   hashmap<string, Owned<Backend>> backends = Backend::create(slave::Flags());
-  ASSERT_TRUE(backends.contains("overlay"));
+  ASSERT_TRUE(backends.contains(OVERLAY_BACKEND));
 
-  AWAIT_READY(backends["overlay"]->provision(
+  AWAIT_READY(backends[OVERLAY_BACKEND]->provision(
       {layer1, layer2},
       rootfs,
       sandbox.get()));
@@ -113,9 +120,52 @@ TEST_F(OverlayBackendTest, ROOT_OVERLAYFS_OverlayFSBackend)
   EXPECT_SOME_EQ("test3", os::read(path::join(rootfs, "file")));
   EXPECT_SOME_EQ("test2", os::read(path::join(layer2, "file")));
 
-  AWAIT_READY(backends["overlay"]->destroy(rootfs));
+  AWAIT_READY(backends[OVERLAY_BACKEND]->destroy(rootfs, sandbox.get()));
 
   EXPECT_FALSE(os::exists(rootfs));
+}
+
+
+// Test overlayfs backend for rootfs provisioning when an image has
+// many layers. This test is used to verify the fix for MESOS-6000.
+TEST_F(OverlayBackendTest, ROOT_OVERLAYFS_OverlayFSBackendWithManyLayers)
+{
+  // Create 64 image layers with more than 64 char length path to make
+  // sure total length of mount option exceeds the 4096 support limit.
+  const int imageCount = 64;
+  vector<string> layers;
+
+  for (int i = 0; i < imageCount; ++i) {
+    const string layer = path::join(
+        sandbox.get(),
+        strings::format("lower_%.59d", i).get());
+
+    const string dir = strings::format("dir%d", i).get();
+
+    ASSERT_SOME(os::mkdir(layer));
+    ASSERT_SOME(os::mkdir(path::join(layer, dir)));
+
+    layers.push_back(layer);
+  }
+
+  string rootfs = path::join(sandbox.get(), "rootfs");
+
+  hashmap<string, Owned<Backend>> backends = Backend::create(slave::Flags());
+  ASSERT_TRUE(backends.contains(OVERLAY_BACKEND));
+
+  AWAIT_READY(backends[OVERLAY_BACKEND]->provision(
+      layers,
+      rootfs,
+      sandbox.get()));
+
+  // Verify that all layers are available.
+  for (int i = 0; i < imageCount; ++i) {
+    EXPECT_TRUE(os::exists(path::join(
+        rootfs,
+        strings::format("dir%d", i).get())));
+  }
+
+  AWAIT_READY(backends[OVERLAY_BACKEND]->destroy(rootfs, sandbox.get()));
 }
 
 
@@ -133,11 +183,11 @@ TEST_F(BindBackendTest, ROOT_BindBackend)
   ASSERT_SOME(mkdir);
 
   hashmap<string, Owned<Backend>> backends = Backend::create(slave::Flags());
-  ASSERT_TRUE(backends.contains("bind"));
+  ASSERT_TRUE(backends.contains(BIND_BACKEND));
 
   string target = path::join(os::getcwd(), "target");
 
-  AWAIT_READY(backends["bind"]->provision(
+  AWAIT_READY(backends[BIND_BACKEND]->provision(
       {rootfs},
       target,
       sandbox.get()));
@@ -150,7 +200,7 @@ TEST_F(BindBackendTest, ROOT_BindBackend)
   EXPECT_TRUE(os::Permissions(mode.get()).owner.w);
   EXPECT_ERROR(os::write(path::join(target, "tmp", "test"), "data"));
 
-  AWAIT_READY(backends["bind"]->destroy(target));
+  AWAIT_READY(backends[BIND_BACKEND]->destroy(target, sandbox.get()));
 
   EXPECT_FALSE(os::exists(target));
 }
@@ -177,9 +227,9 @@ TEST_F(AufsBackendTest, ROOT_AUFS_AufsBackend)
   string rootfs = path::join(os::getcwd(), "rootfs");
 
   hashmap<string, Owned<Backend>> backends = Backend::create(slave::Flags());
-  ASSERT_TRUE(backends.contains("aufs"));
+  ASSERT_TRUE(backends.contains(AUFS_BACKEND));
 
-  AWAIT_READY(backends["aufs"]->provision(
+  AWAIT_READY(backends[AUFS_BACKEND]->provision(
       {layer1, layer2},
       rootfs,
       sandbox.get()));
@@ -201,7 +251,7 @@ TEST_F(AufsBackendTest, ROOT_AUFS_AufsBackend)
   EXPECT_SOME_EQ("test3", os::read(path::join(rootfs, "file")));
   EXPECT_SOME_EQ("test2", os::read(path::join(layer2, "file")));
 
-  AWAIT_READY(backends["aufs"]->destroy(rootfs));
+  AWAIT_READY(backends[AUFS_BACKEND]->destroy(rootfs, sandbox.get()));
 
   EXPECT_FALSE(os::exists(rootfs));
 }
@@ -229,9 +279,9 @@ TEST_F(CopyBackendTest, ROOT_CopyBackend)
   string rootfs = path::join(os::getcwd(), "rootfs");
 
   hashmap<string, Owned<Backend>> backends = Backend::create(slave::Flags());
-  ASSERT_TRUE(backends.contains("copy"));
+  ASSERT_TRUE(backends.contains(COPY_BACKEND));
 
-  AWAIT_READY(backends["copy"]->provision(
+  AWAIT_READY(backends[COPY_BACKEND]->provision(
       {layer1, layer2},
       rootfs,
       sandbox.get()));
@@ -246,7 +296,7 @@ TEST_F(CopyBackendTest, ROOT_CopyBackend)
   EXPECT_TRUE(os::exists(path::join(rootfs, "file")));
   EXPECT_SOME_EQ("test2", os::read(path::join(rootfs, "file")));
 
-  AWAIT_READY(backends["copy"]->destroy(rootfs));
+  AWAIT_READY(backends[COPY_BACKEND]->destroy(rootfs, sandbox.get()));
 
   EXPECT_FALSE(os::exists(rootfs));
 }

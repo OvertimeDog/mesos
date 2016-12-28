@@ -6,8 +6,8 @@ layout: documentation
 # Docker Volume Support in Mesos Containerizer
 
 Mesos 1.0 adds Docker volume support to the
-[MesosContainerizer](mesos-containerizer.md) (a.k.a., the unified containerizer)
-by introducing the new `docker/volume` isolator.
+[MesosContainerizer](mesos-containerizer.md) (a.k.a., the universal
+containerizer) by introducing the new `docker/volume` isolator.
 
 This document describes the motivation, overall architecture, configuration
 steps for enabling Docker volume isolator, and required framework changes.
@@ -365,8 +365,7 @@ Create another task to verify the file `myfile` was created successfully.
     --volumes=<path>/myvolume.json
 ```
 
-Check the [sandbox
-](https://github.com/apache/mesos/blob/master/docs/sandbox.md#where-is-the-sandbox)
+Check the [sandbox](sandbox.md#where-is-it)
 for the second task to check the file `myfile` was created successfully.
 
 ```{.console}

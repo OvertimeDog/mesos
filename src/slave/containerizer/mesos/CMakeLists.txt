@@ -21,24 +21,38 @@ set(CONTAINERIZER_EXECUTABLE_SRC
   main.cpp
   )
 
-# INCLUDE DIRECTIVES FOR CONTAINERIZER EXECUTABLE (generates, e.g.,
-# -I/path/to/thing on Linux).
-###################################################################
-include_directories(${AGENT_INCLUDE_DIRS})
-
-# LINKING LIBRARIES BY DIRECTORY (might generate, e.g., -L/path/to/thing on
-# Linux).
-###########################################################################
-link_directories(${AGENT_LIB_DIRS})
+if (NOT WIN32)
+  set(MESOS_IO_SWITCHBOARD_SRC
+    ${MESOS_IO_SWITCHBOARD_SRC}
+    io/switchboard_main.cpp
+    )
+endif (NOT WIN32)
 
 # THE CONTAINERIZER EXECUTABLE.
 ###############################
 add_executable(${MESOS_CONTAINERIZER} ${CONTAINERIZER_EXECUTABLE_SRC})
+if (NOT WIN32)
+  add_executable(${MESOS_IO_SWITCHBOARD} ${MESOS_IO_SWITCHBOARD_SRC})
+endif (NOT WIN32)
 
 # ADD LINKER FLAGS (generates, e.g., -lglog on Linux).
 ######################################################
-target_link_libraries(${MESOS_CONTAINERIZER} ${AGENT_LIBS} ${MESOS_TARGET})
+target_link_libraries(${MESOS_CONTAINERIZER}  ${AGENT_LIBS} ${MESOS_LIBS_TARGET})
+if (NOT WIN32)
+  target_link_libraries(
+    ${MESOS_IO_SWITCHBOARD}
+    ${AGENT_LIBS}
+    ${MESOS_LIBS_TARGET})
+endif (NOT WIN32)
 
 # ADD BINARY DEPENDENCIES (tells CMake what to compile/build first).
 ####################################################################
-add_dependencies(${MESOS_CONTAINERIZER} ${MESOS_TARGET})
+add_dependencies(${MESOS_TARGET} ${MESOS_CONTAINERIZER})
+if (NOT WIN32)
+  add_dependencies(${MESOS_TARGET} ${MESOS_IO_SWITCHBOARD})
+endif (NOT WIN32)
+
+add_dependencies(${MESOS_CONTAINERIZER}  ${MESOS_LIBS_TARGET})
+if (NOT WIN32)
+  add_dependencies(${MESOS_IO_SWITCHBOARD} ${MESOS_LIBS_TARGET})
+endif (NOT WIN32)

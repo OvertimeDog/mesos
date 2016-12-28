@@ -15,12 +15,13 @@
 // limitations under the License.
 
 #include <algorithm>
-#include <list>
 #include <set>
 #include <string>
+#include <vector>
 
 #include <mesos/mesos.hpp>
 #include <mesos/resources.hpp>
+#include <mesos/values.hpp>
 
 #include <process/pid.hpp>
 
@@ -32,9 +33,9 @@
 
 #include "master/allocator/sorter/drf/sorter.hpp"
 
-using std::list;
 using std::set;
 using std::string;
+using std::vector;
 
 using process::UPID;
 
@@ -59,6 +60,13 @@ DRFSorter::DRFSorter(
     const UPID& allocator,
     const string& metricsPrefix)
   : metrics(Metrics(allocator, *this, metricsPrefix)) {}
+
+
+void DRFSorter::initialize(
+    const Option<set<string>>& _fairnessExcludeResourceNames)
+{
+  fairnessExcludeResourceNames = _fairnessExcludeResourceNames;
+}
 
 
 void DRFSorter::add(const string& name, double weight)
@@ -110,7 +118,7 @@ void DRFSorter::remove(const string& name)
 
 void DRFSorter::activate(const string& name)
 {
-  CHECK(allocations.contains(name));
+  CHECK(contains(name));
 
   set<Client, DRFComparator>::iterator it = find(name);
   if (it == clients.end()) {
@@ -153,9 +161,22 @@ void DRFSorter::allocated(
     clients.insert(client);
   }
 
+  // Add shared resources to the allocated quantities when the same
+  // resources don't already exist in the allocation.
+  const Resources newShared = resources.shared()
+    .filter([this, name, slaveId](const Resource& resource) {
+      return !allocations[name].resources[slaveId].contains(resource);
+    });
+
+  const Resources scalarQuantities =
+    (resources.nonShared() + newShared).createStrippedScalarQuantity();
+
   allocations[name].resources[slaveId] += resources;
-  allocations[name].scalarQuantities +=
-    resources.createStrippedScalarQuantity();
+  allocations[name].scalarQuantities += scalarQuantities;
+
+  foreach (const Resource& resource, scalarQuantities) {
+    allocations[name].totals[resource.name()] += resource.scalar();
+  }
 
   // If the total resources have changed, we're going to
   // recalculate all the shares, so don't bother just
@@ -184,15 +205,6 @@ void DRFSorter::update(
   const Resources newAllocationQuantity =
     newAllocation.createStrippedScalarQuantity();
 
-  CHECK(total_.resources[slaveId].contains(oldAllocation));
-  CHECK(total_.scalarQuantities.contains(oldAllocationQuantity));
-
-  total_.resources[slaveId] -= oldAllocation;
-  total_.resources[slaveId] += newAllocation;
-
-  total_.scalarQuantities -= oldAllocationQuantity;
-  total_.scalarQuantities += newAllocationQuantity;
-
   CHECK(allocations[name].resources[slaveId].contains(oldAllocation));
   CHECK(allocations[name].scalarQuantities.contains(oldAllocationQuantity));
 
@@ -201,6 +213,14 @@ void DRFSorter::update(
 
   allocations[name].scalarQuantities -= oldAllocationQuantity;
   allocations[name].scalarQuantities += newAllocationQuantity;
+
+  foreach (const Resource& resource, oldAllocationQuantity) {
+    allocations[name].totals[resource.name()] -= resource.scalar();
+  }
+
+  foreach (const Resource& resource, newAllocationQuantity) {
+    allocations[name].totals[resource.name()] += resource.scalar();
+  }
 
   // Just assume the total has changed, per the TODO above.
   dirty = true;
@@ -255,12 +275,6 @@ Resources DRFSorter::allocation(const string& name, const SlaveID& slaveId)
 }
 
 
-const hashmap<SlaveID, Resources>& DRFSorter::total() const
-{
-  return total_.resources;
-}
-
-
 const Resources& DRFSorter::totalScalarQuantities() const
 {
   return total_.scalarQuantities;
@@ -272,9 +286,27 @@ void DRFSorter::unallocated(
     const SlaveID& slaveId,
     const Resources& resources)
 {
+  CHECK(allocations[name].resources.contains(slaveId));
+
+  CHECK(allocations[name].resources[slaveId].contains(resources));
   allocations[name].resources[slaveId] -= resources;
-  allocations[name].scalarQuantities -=
-    resources.createStrippedScalarQuantity();
+
+  // Remove shared resources from the allocated quantities when there
+  // are no instances of same resources left in the allocation.
+  const Resources absentShared = resources.shared()
+    .filter([this, name, slaveId](const Resource& resource) {
+      return !allocations[name].resources[slaveId].contains(resource);
+    });
+
+  const Resources scalarQuantities =
+    (resources.nonShared() + absentShared).createStrippedScalarQuantity();
+
+  foreach (const Resource& resource, scalarQuantities) {
+    allocations[name].totals[resource.name()] -= resource.scalar();
+  }
+
+  CHECK(allocations[name].scalarQuantities.contains(scalarQuantities));
+  allocations[name].scalarQuantities -= scalarQuantities;
 
   if (allocations[name].resources[slaveId].empty()) {
     allocations[name].resources.erase(slaveId);
@@ -289,8 +321,23 @@ void DRFSorter::unallocated(
 void DRFSorter::add(const SlaveID& slaveId, const Resources& resources)
 {
   if (!resources.empty()) {
+    // Add shared resources to the total quantities when the same
+    // resources don't already exist in the total.
+    const Resources newShared = resources.shared()
+      .filter([this, slaveId](const Resource& resource) {
+        return !total_.resources[slaveId].contains(resource);
+      });
+
     total_.resources[slaveId] += resources;
-    total_.scalarQuantities += resources.createStrippedScalarQuantity();
+
+    const Resources scalarQuantities =
+      (resources.nonShared() + newShared).createStrippedScalarQuantity();
+
+    total_.scalarQuantities += scalarQuantities;
+
+    foreach (const Resource& resource, scalarQuantities) {
+      total_.totals[resource.name()] += resource.scalar();
+    }
 
     // We have to recalculate all shares when the total resources
     // change, but we put it off until sort is called so that if
@@ -305,9 +352,26 @@ void DRFSorter::remove(const SlaveID& slaveId, const Resources& resources)
 {
   if (!resources.empty()) {
     CHECK(total_.resources.contains(slaveId));
+    CHECK(total_.resources[slaveId].contains(resources));
 
     total_.resources[slaveId] -= resources;
-    total_.scalarQuantities -= resources.createStrippedScalarQuantity();
+
+    // Remove shared resources from the total quantities when there
+    // are no instances of same resources left in the total.
+    const Resources absentShared = resources.shared()
+      .filter([this, slaveId](const Resource& resource) {
+        return !total_.resources[slaveId].contains(resource);
+      });
+
+    const Resources scalarQuantities =
+      (resources.nonShared() + absentShared).createStrippedScalarQuantity();
+
+    foreach (const Resource& resource, scalarQuantities) {
+      total_.totals[resource.name()] -= resource.scalar();
+    }
+
+    CHECK(total_.scalarQuantities.contains(scalarQuantities));
+    total_.scalarQuantities -= scalarQuantities;
 
     if (total_.resources[slaveId].empty()) {
       total_.resources.erase(slaveId);
@@ -318,27 +382,7 @@ void DRFSorter::remove(const SlaveID& slaveId, const Resources& resources)
 }
 
 
-void DRFSorter::update(const SlaveID& slaveId, const Resources& resources)
-{
-  const Resources oldSlaveQuantity =
-    total_.resources[slaveId].createStrippedScalarQuantity();
-
-  CHECK(total_.scalarQuantities.contains(oldSlaveQuantity));
-
-  total_.scalarQuantities -= oldSlaveQuantity;
-  total_.scalarQuantities += resources.createStrippedScalarQuantity();
-
-  total_.resources[slaveId] = resources;
-
-  if (total_.resources[slaveId].empty()) {
-    total_.resources.erase(slaveId);
-  }
-
-  dirty = true;
-}
-
-
-list<string> DRFSorter::sort()
+vector<string> DRFSorter::sort()
 {
   if (dirty) {
     set<Client, DRFComparator> temp;
@@ -360,7 +404,8 @@ list<string> DRFSorter::sort()
     dirty = false;
   }
 
-  list<string> result;
+  vector<string> result;
+  result.reserve(clients.size());
 
   set<Client, DRFComparator>::iterator it;
   for (it = clients.begin(); it != clients.end(); it++) {
@@ -371,7 +416,7 @@ list<string> DRFSorter::sort()
 }
 
 
-bool DRFSorter::contains(const string& name)
+bool DRFSorter::contains(const string& name) const
 {
   return allocations.contains(name);
 }
@@ -400,50 +445,35 @@ void DRFSorter::update(const string& name)
 }
 
 
-double DRFSorter::calculateShare(const string& name)
+double DRFSorter::calculateShare(const string& name) const
 {
+  CHECK(contains(name));
+
   double share = 0.0;
 
   // TODO(benh): This implementation of "dominant resource fairness"
   // currently does not take into account resources that are not
   // scalars.
 
-  foreach (const string& scalar, total_.scalarQuantities.names()) {
-    // We collect the scalar accumulated total value from the
-    // `Resources` object.
-    //
-    // NOTE: Although in principle scalar resources may be spread
-    // across multiple `Resource` objects (e.g., persistent volumes),
-    // we currently strip persistence and reservation metadata from
-    // the resources in `scalarQuantities`.
-    Option<Value::Scalar> __total =
-      total_.scalarQuantities.get<Value::Scalar>(scalar);
+  foreachpair (const string& resourceName,
+               const Value::Scalar& scalar,
+               total_.totals) {
+    // Filter out the resources excluded from fair sharing.
+    if (fairnessExcludeResourceNames.isSome() &&
+        fairnessExcludeResourceNames->count(resourceName) > 0) {
+      continue;
+    }
 
-    CHECK_SOME(__total);
-    const double _total = __total.get().value();
+    if (scalar.value() > 0.0 &&
+        allocations.at(name).totals.contains(resourceName)) {
+      const double allocation =
+        allocations.at(name).totals.at(resourceName).value();
 
-    if (_total > 0.0) {
-      double allocation = 0.0;
-
-      // We collect the scalar accumulated allocation value from the
-      // `Resources` object.
-      //
-      // NOTE: Although in principle scalar resources may be spread
-      // across multiple `Resource` objects (e.g., persistent volumes),
-      // we currently strip persistence and reservation metadata from
-      // the resources in `scalarQuantities`.
-      Option<Value::Scalar> _allocation =
-        allocations[name].scalarQuantities.get<Value::Scalar>(scalar);
-
-      if (_allocation.isSome()) {
-        allocation = _allocation.get().value();
-      }
-
-      share = std::max(share, allocation / _total);
+      share = std::max(share, allocation / scalar.value());
     }
   }
 
-  return share / weights[name];
+  return share / weights.at(name);
 }
 
 

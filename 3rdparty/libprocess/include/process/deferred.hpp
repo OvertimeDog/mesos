@@ -58,7 +58,7 @@ private:
 // hold onto the functor type F and let the compiler invoke the
 // necessary cast operator (below) when it actually has determined
 // what type is needed. This is similar in nature to how std::bind
-// works with it's intermediate _Bind type (which the pre-C++11
+// works with its intermediate _Bind type (which the pre-C++11
 // implementation relied on).
 template <typename F>
 struct _Deferred
@@ -84,7 +84,7 @@ struct _Deferred
 
     return std::function<void()>(
         [=]() {
-          dispatch(pid_.get(), std::function<void()>(f_));
+          dispatch(pid_.get(), f_);
         });
   }
 
@@ -99,7 +99,7 @@ struct _Deferred
 
     return std::function<void()>(
         [=]() {
-          dispatch(pid_.get(), std::function<void()>(f_));
+          dispatch(pid_.get(), f_);
         });
   }
 
@@ -115,7 +115,7 @@ struct _Deferred
 
     return std::function<R()>(
         [=]() {
-          return dispatch(pid_.get(), std::function<R()>(f_));
+          return dispatch(pid_.get(), f_);
         });
   }
 
@@ -131,7 +131,7 @@ struct _Deferred
 
     return std::function<R()>(
         [=]() {
-          return dispatch(pid_.get(), std::function<R()>(f_));
+          return dispatch(pid_.get(), f_);
         });
   }
 

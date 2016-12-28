@@ -15,6 +15,7 @@
 // limitations under the License.
 
 #include <process/dispatch.hpp>
+#include <process/id.hpp>
 #include <process/process.hpp>
 
 #include <stout/adaptor.hpp>
@@ -45,6 +46,9 @@ namespace slave {
 class AufsBackendProcess : public Process<AufsBackendProcess>
 {
 public:
+  AufsBackendProcess()
+    : ProcessBase(process::ID::generate("aufs-provisioner-backend")) {}
+
   Future<Nothing> provision(
       const vector<string>& layers,
       const string& rootfs,
@@ -101,7 +105,10 @@ Future<Nothing> AufsBackend::provision(
       backendDir);
 }
 
-Future<bool> AufsBackend::destroy(const string& rootfs)
+
+Future<bool> AufsBackend::destroy(
+    const string& rootfs,
+    const string& backendDir)
 {
   return dispatch(process.get(), &AufsBackendProcess::destroy, rootfs);
 }
@@ -138,12 +145,16 @@ Future<Nothing> AufsBackendProcess::provision(
 
   // See http://aufs.sourceforge.net/aufs2/man.html
   // for the mount syntax for aufs.
-  string options = "dirs=" + workdir + ":";
+  string options = "dirs=" + workdir + "=rw";
 
-  // For aufs, the specified lower directories will be stacked
-  // beginning from the rightmost one and going left. But we need the
-  // first layer in the vector to be the bottom most layer.
-  options += strings::join(":", adaptor::reverse(layers));
+  // For aufs, the specified lower directories will be stacked beginning
+  // from the rightmost one and going left. But we need the first layer
+  // in the vector to be the bottom most layer. And for each layer, we
+  // need to mount it with the option 'ro+wh' so that it will be read-only
+  // and its whiteout files (if any) will be well handled.
+  foreach (const string& layer, adaptor::reverse(layers)) {
+    options += ":" + layer + "=ro+wh";
+  }
 
   VLOG(1) << "Provisioning image rootfs with aufs: '" << options << "'";
 

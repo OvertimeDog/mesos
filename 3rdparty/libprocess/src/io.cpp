@@ -17,6 +17,7 @@
 
 #include <process/future.hpp>
 #include <process/io.hpp>
+#include <process/loop.hpp>
 #include <process/process.hpp> // For process::initialize.
 
 #include <stout/lambda.hpp>
@@ -28,6 +29,7 @@
 #include <stout/try.hpp>
 
 using std::string;
+using std::vector;
 
 namespace process {
 namespace io {
@@ -73,7 +75,7 @@ void read(
       // error will be propagted out.
       // NOTE: We cast to `char*` here because the function prototypes on
       // Windows use `char*` instead of `void*`.
-      length = ::recv(fd, (char*) data, size, MSG_PEEK);
+      length = net::recv(fd, (char*) data, size, MSG_PEEK);
     }
 
 #ifdef __WINDOWS__
@@ -315,84 +317,36 @@ Future<string> _read(
 }
 
 
-Future<Nothing> _write(
-    int fd,
-    Owned<string> data,
-    size_t index)
-{
-  return io::write(fd, data->data() + index, data->size() - index)
-    .then([=](size_t length) -> Future<Nothing> {
-      if (index + length == data->size()) {
-        return Nothing();
-      }
-      return _write(fd, data, index + length);
-    });
-}
-
-
-void _splice(
+Future<Nothing> splice(
     int from,
     int to,
     size_t chunk,
-    boost::shared_array<char> data,
-    std::shared_ptr<Promise<Nothing>> promise)
-{
-  // Stop splicing if a discard occurred on our future.
-  if (promise->future().hasDiscard()) {
-    // TODO(benh): Consider returning the number of bytes already
-    // spliced on discarded, or a failure. Same for the 'onDiscarded'
-    // callbacks below.
-    promise->discard();
-    return;
-  }
-
-  // Note that only one of io::read or io::write is outstanding at any
-  // one point in time thus the reuse of 'data' for both operations.
-
-  Future<size_t> read = io::read(from, data.get(), chunk);
-
-  // Stop reading (or potentially indefinitely polling) if a discard
-  // occcurs on our future.
-  promise->future().onDiscard(
-      lambda::bind(&process::internal::discard<size_t>,
-                   WeakFuture<size_t>(read)));
-
-  read
-    .onReady([=](size_t size) {
-      if (size == 0) { // EOF.
-        promise->set(Nothing());
-      } else {
-        // Note that we always try and complete the write, even if a
-        // discard has occurred on our future, in order to provide
-        // semantics where everything read is written. The promise
-        // will eventually be discarded in the next read.
-        io::write(to, string(data.get(), size))
-          .onReady([=]() { _splice(from, to, chunk, data, promise); })
-          .onFailed([=](const string& message) { promise->fail(message); })
-          .onDiscarded([=]() { promise->discard(); });
-      }
-    })
-    .onFailed([=](const string& message) { promise->fail(message); })
-    .onDiscarded([=]() { promise->discard(); });
-}
-
-
-Future<Nothing> splice(int from, int to, size_t chunk)
+    const vector<lambda::function<void(const string&)>>& hooks)
 {
   boost::shared_array<char> data(new char[chunk]);
+  return loop(
+      None(),
+      [=]() {
+        return io::read(from, data.get(), chunk);
+      },
+      [=](size_t length) -> Future<bool> {
+        if (length == 0) { // EOF.
+          return false;
+        }
 
-  // Rather than having internal::_splice return a future and
-  // implementing internal::_splice as a chain of io::read and
-  // io::write calls, we use an explicit promise that we pass around
-  // so that we don't increase memory usage the longer that we splice.
-  std::shared_ptr<Promise<Nothing>> promise(new Promise<Nothing>());
+        // Send the data to the redirect hooks.
+        const string s = string(data.get(), length);
+        foreach (const lambda::function<void(const string&)>& hook, hooks) {
+          hook(s);
+        }
 
-  Future<Nothing> future = promise->future();
-
-  _splice(from, to, chunk, data, promise);
-
-  return future;
+        return io::write(to, s)
+          .then([]() {
+            return true;
+          });
+      });
 }
+
 
 } // namespace internal {
 
@@ -490,13 +444,28 @@ Future<Nothing> write(int fd, const string& data)
         nonblock.error());
   }
 
-  // NOTE: We wrap `os::close` in a lambda to disambiguate on Windows.
-  return internal::_write(fd, Owned<string>(new string(data)), 0)
-    .onAny([fd]() { os::close(fd); });
+  const size_t size = data.size();
+  std::shared_ptr<size_t> index(new size_t(0));
+
+  return loop(
+      None(),
+      [=]() {
+        return io::write(fd, data.data() + *index, size - *index);
+      },
+      [=](size_t length) {
+        return (*index += length) != size;
+      })
+    .onAny([fd]() {
+        os::close(fd);
+    });
 }
 
 
-Future<Nothing> redirect(int from, Option<int> to, size_t chunk)
+Future<Nothing> redirect(
+    int from,
+    Option<int> to,
+    size_t chunk,
+    const vector<lambda::function<void(const string&)>>& hooks)
 {
   // Make sure we've got "valid" file descriptors.
   if (from < 0 || (to.isSome() && to.get() < 0)) {
@@ -562,7 +531,7 @@ Future<Nothing> redirect(int from, Option<int> to, size_t chunk)
   }
 
   // NOTE: We wrap `os::close` in a lambda to disambiguate on Windows.
-  return internal::splice(from, to.get(), chunk)
+  return internal::splice(from, to.get(), chunk, hooks)
     .onAny([from]() { os::close(from); })
     .onAny([to]() { os::close(to.get()); });
 }
@@ -571,12 +540,17 @@ Future<Nothing> redirect(int from, Option<int> to, size_t chunk)
 #ifdef __WINDOWS__
 // NOTE: Ordinarily this would go in a Windows-specific header; we put it here
 // to avoid complex forward declarations.
-Future<Nothing> redirect(HANDLE from, Option<int> to, size_t chunk)
+Future<Nothing> redirect(
+    HANDLE from,
+    Option<int> to,
+    size_t chunk,
+    const vector<lambda::function<void(const string&)>>& hooks)
 {
   return redirect(
       _open_osfhandle(reinterpret_cast<intptr_t>(from), O_RDWR),
       to,
-      chunk);
+      chunk,
+      hooks);
 }
 #endif // __WINDOWS__
 
@@ -598,7 +572,7 @@ Future<string> peek(int fd, size_t limit)
   return io::peek(fd, data.get(), BUFFERED_READ_SIZE, limit)
     .then([=](size_t length) -> Future<string> {
       // At this point we have to return whatever data we were able to
-      // peek, because we can not rely on peeking across message
+      // peek, because we cannot rely on peeking across message
       // boundaries.
       return string(data.get(), length);
     });

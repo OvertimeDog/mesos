@@ -10,13 +10,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef __STOUT_OS_POSIX_HPP__
-#define __STOUT_OS_POSIX_HPP__
+#ifndef __STOUT_OS_LINUX_HPP__
+#define __STOUT_OS_LINUX_HPP__
 
 // This file contains Linux-only OS utilities.
 #ifndef __linux__
 #error "stout/os/linux.hpp is only available on Linux systems."
-#endif
+#endif // __linux__
 
 #include <sys/types.h> // For pid_t.
 
@@ -49,7 +49,19 @@ static int childMain(void* _func)
 }
 
 
-inline pid_t clone(const lambda::function<int()>& func, int flags)
+// Helper that captures information about a stack to be used when
+// invoking clone.
+struct Stack
+{
+  size_t size;
+  unsigned long long* address;
+};
+
+
+inline pid_t clone(
+    const lambda::function<int()>& func,
+    int flags,
+    Option<Stack> stack = None())
 {
   // Stack for the child.
   // - unsigned long long used for best alignment.
@@ -59,22 +71,33 @@ inline pid_t clone(const lambda::function<int()>& func, int flags)
   // glibc's 'clone' will modify the stack passed to it, therefore the
   // stack must NOT be shared as multiple 'clone's can be invoked
   // simultaneously.
-  int stackSize = 8 * 1024 * 1024;
-  unsigned long long *stack =
-    new unsigned long long[stackSize/sizeof(unsigned long long)];
+  bool cleanup = false;
+  if (stack.isNone()) {
+    stack = Stack();
+    stack->size = 8 * 1024 * 1024;
+    stack->address =
+      new unsigned long long[stack->size/sizeof(unsigned long long)];
+    cleanup = true;
+  }
 
-  pid_t pid = ::clone(
-      childMain,
-      &stack[stackSize/sizeof(stack[0]) - 1],  // stack grows down.
-      flags,
-      (void*) &func);
+  // Compute the address of the stack given that it grows down.
+  void* address = &stack->address[stack->size / sizeof(stack->address[0]) - 1];
 
-  // If CLONE_VM is not set, ::clone would create a process which runs in a
-  // separate copy of the memory space of the calling process. So we destroy the
-  // stack here to avoid memory leak. If CLONE_VM is set, ::clone would create a
-  // thread which runs in the same memory space with the calling process.
-  if (!(flags & CLONE_VM)) {
-    delete[] stack;
+  pid_t pid = ::clone(childMain, address, flags, (void*) &func);
+
+  // Given we allocated the stack ourselves, there are two
+  // circumstances where we need to delete the allocated stack to
+  // avoid a memory leak:
+  //
+  // (1) Failed to clone.
+  //
+  // (2) CLONE_VM is not set implying ::clone will create a process
+  //     which runs in its own copy of the memory space of the
+  //     calling process. If CLONE_VM is set ::clone will create a
+  //     thread which runs in the same memory space with the calling
+  //     process, in which case we don't want to call delete!
+  if (cleanup && (pid < 0 || !(flags & CLONE_VM))) {
+    delete[] stack->address;
   }
 
   return pid;
@@ -84,10 +107,7 @@ inline pid_t clone(const lambda::function<int()>& func, int flags)
 inline Result<Process> process(pid_t pid)
 {
   // Page size, used for memory accounting.
-  static const int pageSize = os::pagesize();
-  if (pageSize <= 0) {
-    return Error("Failed to get `os::pagesize`");
-  }
+  static const size_t pageSize = os::pagesize();
 
   // Number of clock ticks per second, used for cpu accounting.
   static const long ticks = sysconf(_SC_CLK_TCK);
@@ -167,4 +187,4 @@ inline Try<Memory> memory()
 
 } // namespace os {
 
-#endif // __STOUT_OS_POSIX_HPP__
+#endif // __STOUT_OS_LINUX_HPP__

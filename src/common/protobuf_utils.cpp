@@ -14,6 +14,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifdef __WINDOWS__
+#include <stout/internal/windows/grp.hpp>
+#include <stout/internal/windows/pwd.hpp>
+#else
+#include <grp.h>
+#include <pwd.h>
+#endif // __WINDOWS__
+
 #include <mesos/slave/isolator.hpp>
 
 #include <mesos/type_utils.hpp>
@@ -22,15 +30,25 @@
 #include <process/pid.hpp>
 
 #include <stout/adaptor.hpp>
+#include <stout/duration.hpp>
 #include <stout/foreach.hpp>
 #include <stout/net.hpp>
 #include <stout/stringify.hpp>
 #include <stout/uuid.hpp>
 
+#include <stout/os/permissions.hpp>
+
+#ifdef __WINDOWS__
+#include <stout/windows.hpp>
+#endif // __WINDOWS__
+
 #include "common/protobuf_utils.hpp"
+
+#include "master/master.hpp"
 
 #include "messages/messages.hpp"
 
+using std::set;
 using std::string;
 
 using google::protobuf::RepeatedPtrField;
@@ -44,13 +62,34 @@ namespace mesos {
 namespace internal {
 namespace protobuf {
 
+bool frameworkHasCapability(
+    const FrameworkInfo& framework,
+    FrameworkInfo::Capability::Type capability)
+{
+  foreach (const FrameworkInfo::Capability& c,
+           framework.capabilities()) {
+    if (c.type() == capability) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+
 bool isTerminalState(const TaskState& state)
 {
+  // TODO(neilc): Revise/rename this function. LOST, UNREACHABLE, and
+  // GONE_BY_OPERATOR are not truly "terminal".
   return (state == TASK_FINISHED ||
           state == TASK_FAILED ||
           state == TASK_KILLED ||
           state == TASK_LOST ||
-          state == TASK_ERROR);
+          state == TASK_ERROR ||
+          state == TASK_UNREACHABLE ||
+          state == TASK_DROPPED ||
+          state == TASK_GONE ||
+          state == TASK_GONE_BY_OPERATOR);
 }
 
 
@@ -66,7 +105,8 @@ StatusUpdate createStatusUpdate(
     const Option<ExecutorID>& executorId,
     const Option<bool>& healthy,
     const Option<Labels>& labels,
-    const Option<ContainerStatus>& containerStatus)
+    const Option<ContainerStatus>& containerStatus,
+    const Option<TimeInfo> unreachableTime)
 {
   StatusUpdate update;
 
@@ -114,6 +154,10 @@ StatusUpdate createStatusUpdate(
     status->mutable_container_status()->CopyFrom(containerStatus.get());
   }
 
+  if (unreachableTime.isSome()) {
+    status->mutable_unreachable_time()->CopyFrom(unreachableTime.get());
+  }
+
   return update;
 }
 
@@ -131,11 +175,17 @@ StatusUpdate createStatusUpdate(
     update.mutable_executor_id()->MergeFrom(status.executor_id());
   }
 
+  update.mutable_status()->MergeFrom(status);
+
   if (slaveId.isSome()) {
     update.mutable_slave_id()->MergeFrom(slaveId.get());
-  }
 
-  update.mutable_status()->MergeFrom(status);
+    // We also populate `TaskStatus.slave_id` if the executor
+    // did not set it.
+    if (!status.has_slave_id()) {
+      update.mutable_status()->mutable_slave_id()->MergeFrom(slaveId.get());
+    }
+  }
 
   if (!status.has_timestamp()) {
     update.set_timestamp(process::Clock::now().secs());
@@ -286,6 +336,34 @@ TimeInfo getCurrentTime()
   return timeInfo;
 }
 
+
+FileInfo createFileInfo(const string& path, const struct stat& s)
+{
+  FileInfo file;
+  file.set_path(path);
+  file.set_nlink(s.st_nlink);
+  file.set_size(s.st_size);
+  file.mutable_mtime()->set_nanoseconds(Seconds((s.st_mtime)).ns());
+  file.set_mode(s.st_mode);
+
+  // NOTE: `getpwuid` and `getgrgid` return `nullptr` on Windows.
+  passwd* p = getpwuid(s.st_uid);
+  if (p != nullptr) {
+    file.set_uid(p->pw_name);
+  } else {
+    file.set_uid(stringify(s.st_uid));
+  }
+
+  struct group* g = getgrgid(s.st_gid);
+  if (g != nullptr) {
+    file.set_gid(g->gr_name);
+  } else {
+    file.set_gid(stringify(s.st_gid));
+  }
+
+  return file;
+}
+
 namespace slave {
 
 ContainerLimitation createContainerLimitation(
@@ -304,16 +382,21 @@ ContainerLimitation createContainerLimitation(
 
 
 ContainerState createContainerState(
-    const ExecutorInfo& executorInfo,
-    const ContainerID& container_id,
+    const Option<ExecutorInfo>& executorInfo,
+    const ContainerID& containerId,
     pid_t pid,
     const string& directory)
 {
   ContainerState state;
-  state.mutable_executor_info()->CopyFrom(executorInfo);
-  state.mutable_container_id()->CopyFrom(container_id);
+
+  if (executorInfo.isSome()) {
+    state.mutable_executor_info()->CopyFrom(executorInfo.get());
+  }
+
+  state.mutable_container_id()->CopyFrom(containerId);
   state.set_pid(pid);
   state.set_directory(directory);
+
   return state;
 }
 
@@ -381,21 +464,18 @@ mesos::maintenance::Schedule createSchedule(
 namespace master {
 namespace event {
 
-mesos::master::Event createTaskUpdated(const Task& task, const TaskState& state)
+mesos::master::Event createTaskUpdated(
+    const Task& task,
+    const TaskState& state,
+    const TaskStatus& status)
 {
   mesos::master::Event event;
   event.set_type(mesos::master::Event::TASK_UPDATED);
 
   mesos::master::Event::TaskUpdated* taskUpdated = event.mutable_task_updated();
 
-  taskUpdated->mutable_task_id()->CopyFrom(task.task_id());
   taskUpdated->mutable_framework_id()->CopyFrom(task.framework_id());
-  taskUpdated->mutable_slave_id()->CopyFrom(task.slave_id());
-
-  if (task.has_executor_id()) {
-    taskUpdated->mutable_executor_id()->CopyFrom(task.executor_id());
-  }
-
+  taskUpdated->mutable_status()->CopyFrom(status);
   taskUpdated->set_state(state);
 
   return event;
@@ -412,8 +492,85 @@ mesos::master::Event createTaskAdded(const Task& task)
   return event;
 }
 
+
+mesos::master::Response::GetAgents::Agent createAgentResponse(
+    const mesos::internal::master::Slave& slave)
+{
+  mesos::master::Response::GetAgents::Agent agent;
+
+  agent.mutable_agent_info()->CopyFrom(slave.info);
+
+  agent.set_pid(string(slave.pid));
+  agent.set_active(slave.active);
+  agent.set_version(slave.version);
+
+  agent.mutable_registered_time()->set_nanoseconds(
+      slave.registeredTime.duration().ns());
+
+  if (slave.reregisteredTime.isSome()) {
+    agent.mutable_reregistered_time()->set_nanoseconds(
+        slave.reregisteredTime.get().duration().ns());
+  }
+
+  foreach (const Resource& resource, slave.totalResources) {
+    agent.add_total_resources()->CopyFrom(resource);
+  }
+
+  foreach (const Resource& resource, Resources::sum(slave.usedResources)) {
+    agent.add_allocated_resources()->CopyFrom(resource);
+  }
+
+  foreach (const Resource& resource, slave.offeredResources) {
+    agent.add_offered_resources()->CopyFrom(resource);
+  }
+
+  return agent;
+}
+
+
+mesos::master::Event createAgentAdded(
+    const mesos::internal::master::Slave& slave)
+{
+  mesos::master::Event event;
+  event.set_type(mesos::master::Event::AGENT_ADDED);
+
+  event.mutable_agent_added()->mutable_agent()->CopyFrom(
+      createAgentResponse(slave));
+
+  return event;
+}
+
+
+mesos::master::Event createAgentRemoved(const SlaveID& slaveId)
+{
+  mesos::master::Event event;
+  event.set_type(mesos::master::Event::AGENT_REMOVED);
+
+  event.mutable_agent_removed()->mutable_agent_id()->CopyFrom(
+      slaveId);
+
+  return event;
+}
+
 } // namespace event {
 } // namespace master {
+
+namespace framework {
+
+set<string> getRoles(const FrameworkInfo& frameworkInfo)
+{
+  if (protobuf::frameworkHasCapability(
+          frameworkInfo,
+          FrameworkInfo::Capability::MULTI_ROLE)) {
+    return set<string>(
+        frameworkInfo.roles().begin(),
+        frameworkInfo.roles().end());
+  } else {
+    return {frameworkInfo.role()};
+  }
+}
+
+} // namespace framework {
 
 } // namespace protobuf {
 } // namespace internal {

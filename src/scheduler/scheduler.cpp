@@ -14,14 +14,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#ifndef __WINDOWS__
 #include <dlfcn.h>
+#endif // __WINDOWS__
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __WINDOWS__
 #include <unistd.h>
+#endif // __WINDOWS__
 
+#ifndef __WINDOWS__
 #include <arpa/inet.h>
+#endif // __WINDOWS__
 
 #include <iostream>
 #include <memory>
@@ -47,6 +53,11 @@
 #include <process/pid.hpp>
 #include <process/process.hpp>
 #include <process/protobuf.hpp>
+
+#include <process/metrics/gauge.hpp>
+#include <process/metrics/metrics.hpp>
+
+#include <process/ssl/flags.hpp>
 
 #include <stout/check.hpp>
 #include <stout/duration.hpp>
@@ -141,6 +152,7 @@ public:
       const Flags& _flags)
     : ProcessBase(ID::generate("scheduler")),
       state(DISCONNECTED),
+      metrics(*this),
       contentType(_contentType),
       callbacks {connected, disconnected, received},
       credential(_credential),
@@ -443,13 +455,10 @@ protected:
       string scheme = "http";
 
 #ifdef USE_SSL_SOCKET
-      Option<string> value;
-
-      value = os::getenv("SSL_ENABLED");
-      if (value.isSome() && (value.get() == "1" || value.get() == "true")) {
+      if (process::network::openssl::flags().enabled) {
         scheme = "https";
       }
-#endif
+#endif // USE_SSL_SOCKET
 
       master = ::URL(
         scheme,
@@ -548,7 +557,12 @@ protected:
       // Responses to SUBSCRIBE calls should always include a stream ID.
       CHECK(response->headers.contains("Mesos-Stream-Id"));
 
-      streamId = UUID::fromString(response->headers.at("Mesos-Stream-Id"));
+      Try<UUID> uuid =
+        UUID::fromString(response->headers.at("Mesos-Stream-Id"));
+
+      CHECK_SOME(uuid);
+
+      streamId = uuid.get();
 
       read();
 
@@ -629,7 +643,7 @@ protected:
     }
 
     // This could happen if the master failed over after sending an event.
-    if (!event->isSome()) {
+    if (event->isNone()) {
       const string error = "End-Of-File received from master. The master "
                            "closed the event stream";
       LOG(ERROR) << error;
@@ -709,6 +723,46 @@ private:
     }
 
     UNREACHABLE();
+  }
+
+  struct Metrics
+  {
+    Metrics(const MesosProcess& mesosProcess)
+      : event_queue_messages(
+          "scheduler/event_queue_messages",
+          defer(mesosProcess, &MesosProcess::_event_queue_messages)),
+        event_queue_dispatches(
+          "scheduler/event_queue_dispatches",
+          defer(mesosProcess,
+                &MesosProcess::_event_queue_dispatches))
+    {
+      // TODO(dhamon): When we start checking the return value of 'add' we may
+      // get failures in situations where multiple SchedulerProcesses are active
+      // (ie, the fault tolerance tests). At that point we'll need MESOS-1285 to
+      // be fixed and to use self().id in the metric name.
+      process::metrics::add(event_queue_messages);
+      process::metrics::add(event_queue_dispatches);
+    }
+
+    ~Metrics()
+    {
+      process::metrics::remove(event_queue_messages);
+      process::metrics::remove(event_queue_dispatches);
+    }
+
+    // Process metrics.
+    process::metrics::Gauge event_queue_messages;
+    process::metrics::Gauge event_queue_dispatches;
+  } metrics;
+
+  double _event_queue_messages()
+  {
+    return static_cast<double>(eventCount<MessageEvent>());
+  }
+
+  double _event_queue_dispatches()
+  {
+    return static_cast<double>(eventCount<DispatchEvent>());
   }
 
   // There can be multiple simulataneous ongoing (re-)connection attempts with

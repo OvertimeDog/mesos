@@ -70,6 +70,7 @@
 #include "linux/routing/handle.hpp"
 
 #include "linux/routing/link/link.hpp"
+#include "linux/routing/link/veth.hpp"
 
 #include "linux/routing/queueing/fq_codel.hpp"
 #include "linux/routing/queueing/htb.hpp"
@@ -393,25 +394,25 @@ const char* PortMappingUpdate::NAME = "update";
 
 PortMappingUpdate::Flags::Flags()
 {
-  add(&eth0_name,
+  add(&Flags::eth0_name,
       "eth0_name",
       "The name of the public network interface (e.g., eth0)");
 
-  add(&lo_name,
+  add(&Flags::lo_name,
       "lo_name",
       "The name of the loopback network interface (e.g., lo)");
 
-  add(&pid,
+  add(&Flags::pid,
       "pid",
       "The pid of the process whose namespaces we will enter");
 
-  add(&ports_to_add,
+  add(&Flags::ports_to_add,
       "ports_to_add",
       "A collection of port ranges (formatted as a JSON object)\n"
       "for which to add IP filters. E.g.,\n"
       "--ports_to_add={\"range\":[{\"begin\":4,\"end\":8}]}");
 
-  add(&ports_to_remove,
+  add(&Flags::ports_to_remove,
       "ports_to_remove",
       "A collection of port ranges (formatted as a JSON object)\n"
       "for which to remove IP filters. E.g.,\n"
@@ -657,26 +658,26 @@ const char* PortMappingStatistics::NAME = "statistics";
 
 PortMappingStatistics::Flags::Flags()
 {
-  add(&eth0_name,
+  add(&Flags::eth0_name,
       "eth0_name",
       "The name of the public network interface (e.g., eth0)");
 
-  add(&pid,
+  add(&Flags::pid,
       "pid",
       "The pid of the process whose namespaces we will enter");
 
-  add(&enable_socket_statistics_summary,
+  add(&Flags::enable_socket_statistics_summary,
       "enable_socket_statistics_summary",
       "Whether to collect socket statistics summary for this container\n",
       false);
 
-  add(&enable_socket_statistics_details,
+  add(&Flags::enable_socket_statistics_details,
       "enable_socket_statistics_details",
       "Whether to collect socket statistics details (e.g., TCP RTT)\n"
       "for this container.",
       false);
 
-  add(&enable_snmp_statistics,
+  add(&Flags::enable_snmp_statistics,
       "enable_snmp_statistics",
       "Whether to collect SNMP statistics details (e.g., TCPRetransSegs)\n"
       "for this container.",
@@ -2514,14 +2515,15 @@ Future<Option<ContainerLaunchInfo>> PortMappingIsolatorProcess::prepare(
             << executorInfo.executor_id() << "'";
 
   ContainerLaunchInfo launchInfo;
-  launchInfo.add_commands()->set_value(scripts(infos[containerId]));
+  launchInfo.add_pre_exec_commands()->set_value(scripts(infos[containerId]));
 
   // NOTE: the port mapping isolator itself doesn't require mount
   // namespace. However, if mount namespace is enabled because of
   // other isolators, we need to set mount sharing accordingly for
   // PORT_MAPPING_BIND_MOUNT_ROOT to avoid races described in
   // MESOS-1558. So we turn on mount namespace here for consistency.
-  launchInfo.set_namespaces(CLONE_NEWNET | CLONE_NEWNS);
+  launchInfo.add_clone_namespaces(CLONE_NEWNET);
+  launchInfo.add_clone_namespaces(CLONE_NEWNS);
 
   return launchInfo;
 }
@@ -2592,14 +2594,14 @@ Future<Nothing> PortMappingIsolatorProcess::isolate(
             << linker << "' -> '" << target << "'";
 
   // Create a virtual ethernet pair for this container.
-  Try<bool> createVethPair = link::create(veth(pid), eth0, pid);
+  Try<bool> createVethPair = link::veth::create(veth(pid), eth0, pid);
   if (createVethPair.isError()) {
     return Failure(
         "Failed to create virtual ethernet pair: " +
         createVethPair.error());
   }
 
-  // We can not reuse the existing veth pair, because one of them is
+  // We cannot reuse the existing veth pair, because one of them is
   // still inside another container.
   if (!createVethPair.get()) {
     return Failure(
@@ -3080,8 +3082,7 @@ Future<Nothing> PortMappingIsolatorProcess::update(
       Subprocess::PATH("/dev/null"),
       Subprocess::FD(STDOUT_FILENO),
       Subprocess::FD(STDERR_FILENO),
-      NO_SETSID,
-      update.flags);
+      &update.flags);
 
   if (s.isError()) {
     return Failure("Failed to launch update subcommand: " + s.error());
@@ -3207,8 +3208,7 @@ Future<ResourceStatistics> PortMappingIsolatorProcess::usage(
       Subprocess::PATH("/dev/null"),
       Subprocess::PIPE(),
       Subprocess::FD(STDERR_FILENO),
-      NO_SETSID,
-      statistics.flags);
+      &statistics.flags);
 
   if (s.isError()) {
     return Failure("Failed to launch the statistics subcommand: " + s.error());

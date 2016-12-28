@@ -32,11 +32,17 @@
 #include <process/owned.hpp>
 #include <process/pid.hpp>
 #include <process/process.hpp>
+#include <process/timeout.hpp>
 
 #include <stout/duration.hpp>
 #include <stout/gtest.hpp>
 #include <stout/nothing.hpp>
 #include <stout/os.hpp>
+#include <stout/path.hpp>
+
+#ifdef __linux__
+#include "linux/fs.hpp"
+#endif
 
 #include "logging/logging.hpp"
 
@@ -66,6 +72,7 @@ using process::Clock;
 using process::Future;
 using process::Owned;
 using process::PID;
+using process::Timeout;
 
 using std::list;
 using std::map;
@@ -252,7 +259,7 @@ class GarbageCollectorIntegrationTest : public MesosTest {};
 
 // This test ensures that garbage collection removes
 // the slave working directory after a slave restart.
-TEST_F(GarbageCollectorIntegrationTest, Restart)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(GarbageCollectorIntegrationTest, Restart)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -266,6 +273,10 @@ TEST_F(GarbageCollectorIntegrationTest, Restart)
   // Need to create our own flags because we want to reuse them when
   // we (re)start the slave below.
   slave::Flags flags = CreateSlaveFlags();
+
+  // Set the `executor_shutdown_grace_period` to a small value so that
+  // the agent does not wait for executors to clean up for too long.
+  flags.executor_shutdown_grace_period = Milliseconds(50);
 
   Owned<MasterDetector> detector = master.get()->createDetector();
 
@@ -362,7 +373,9 @@ TEST_F(GarbageCollectorIntegrationTest, Restart)
 }
 
 
-TEST_F(GarbageCollectorIntegrationTest, ExitedFramework)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(
+    GarbageCollectorIntegrationTest,
+    ExitedFramework)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -482,7 +495,7 @@ TEST_F(GarbageCollectorIntegrationTest, ExitedFramework)
 }
 
 
-TEST_F(GarbageCollectorIntegrationTest, ExitedExecutor)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(GarbageCollectorIntegrationTest, ExitedExecutor)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -592,7 +605,7 @@ TEST_F(GarbageCollectorIntegrationTest, ExitedExecutor)
 }
 
 
-TEST_F(GarbageCollectorIntegrationTest, DiskUsage)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(GarbageCollectorIntegrationTest, DiskUsage)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -716,7 +729,7 @@ TEST_F(GarbageCollectorIntegrationTest, DiskUsage)
 // This test verifies that the launch of new executor will result in
 // an unschedule of the framework work directory created by an old
 // executor.
-TEST_F(GarbageCollectorIntegrationTest, Unschedule)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(GarbageCollectorIntegrationTest, Unschedule)
 {
   Try<Owned<cluster::Master>> master = StartMaster();
   ASSERT_SOME(master);
@@ -724,8 +737,8 @@ TEST_F(GarbageCollectorIntegrationTest, Unschedule)
   Future<SlaveRegisteredMessage> slaveRegistered =
     FUTURE_PROTOBUF(SlaveRegisteredMessage(), _, _);
 
-  ExecutorInfo executor1 = CREATE_EXECUTOR_INFO("executor-1", "exit 1");
-  ExecutorInfo executor2 = CREATE_EXECUTOR_INFO("executor-2", "exit 1");
+  ExecutorInfo executor1 = createExecutorInfo("executor-1", "exit 1");
+  ExecutorInfo executor2 = createExecutorInfo("executor-2", "exit 1");
 
   MockExecutor exec1(executor1.executor_id());
   MockExecutor exec2(executor2.executor_id());
@@ -843,6 +856,121 @@ TEST_F(GarbageCollectorIntegrationTest, Unschedule)
   driver.stop();
   driver.join();
 }
+
+
+#ifdef __linux__
+// In Mesos it's possible for tasks and isolators to lay down files
+// that are not deletable by GC. This test runs a task that creates a busy
+// mount point which is not directly deletable by GC. We verify that
+// GC deletes all files that it's able to delete in the face of such errors.
+TEST_F(GarbageCollectorIntegrationTest, ROOT_BusyMountPoint)
+{
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags flags = CreateSlaveFlags();
+  Owned<MasterDetector> detector = master.get()->createDetector();
+  Try<Owned<cluster::Slave>> slave = StartSlave(detector.get(), flags);
+
+  ASSERT_SOME(slave);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched,
+      DEFAULT_FRAMEWORK_INFO,
+      master.get()->pid,
+      DEFAULT_CREDENTIAL);
+
+  Future<FrameworkID> frameworkId;
+  EXPECT_CALL(sched, registered(_, _, _))
+    .WillOnce(FutureArg<1>(&frameworkId));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return());
+
+  driver.start();
+
+  AWAIT_READY(frameworkId);
+  AWAIT_READY(offers);
+  EXPECT_FALSE(offers.get().empty());
+
+  const Offer& offer = offers.get()[0];
+  SlaveID slaveId = offer.slave_id();
+
+  // The busy mount point goes before the regular file in GC's
+  // directory traversal due to their names. This makes sure that
+  // an error occurs before all deletable files are GCed.
+  string mountPoint = "test1";
+  string regularFile = "test2.txt";
+
+  TaskInfo task = createTask(
+      slaveId,
+      Resources::parse("cpus:1;mem:128;disk:1").get(),
+      "touch "+ regularFile + "; "
+      "mkdir " + mountPoint + "; "
+      "mount --bind " + mountPoint + " " + mountPoint,
+      None(),
+      "test-task123",
+      "test-task123");
+
+  Future<TaskStatus> status1;
+  Future<TaskStatus> status2;
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&status1))
+    .WillOnce(FutureArg<1>(&status2));
+
+  Future<Nothing> schedule = FUTURE_DISPATCH(
+      _, &GarbageCollectorProcess::schedule);
+
+  driver.launchTasks(offer.id(), {task});
+
+  AWAIT_READY(status1);
+  EXPECT_EQ(task.task_id(), status1.get().task_id());
+  EXPECT_EQ(TASK_RUNNING, status1.get().state());
+
+  ExecutorID executorId;
+  executorId.set_value("test-task123");
+  Result<string> _sandbox = os::realpath(slave::paths::getExecutorLatestRunPath(
+      flags.work_dir,
+      slaveId,
+      frameworkId.get(),
+      executorId));
+  ASSERT_SOME(_sandbox);
+  string sandbox = _sandbox.get();
+  EXPECT_TRUE(os::exists(sandbox));
+
+  // Wait for the task to create these paths.
+  Timeout timeout = Timeout::in(Seconds(15));
+  while (!os::exists(path::join(sandbox, mountPoint)) ||
+         !os::exists(path::join(sandbox, regularFile)) ||
+         !timeout.expired()) {
+    os::sleep(Milliseconds(10));
+  }
+
+  ASSERT_TRUE(os::exists(path::join(sandbox, mountPoint)));
+  ASSERT_TRUE(os::exists(path::join(sandbox, regularFile)));
+
+  AWAIT_READY(status2);
+  ASSERT_EQ(task.task_id(), status2.get().task_id());
+  EXPECT_EQ(TASK_FINISHED, status2.get().state());
+
+  AWAIT_READY(schedule);
+
+  Clock::pause();
+  Clock::advance(flags.gc_delay);
+  Clock::settle();
+
+  EXPECT_TRUE(os::exists(sandbox));
+  EXPECT_TRUE(os::exists(path::join(sandbox, mountPoint)));
+  EXPECT_FALSE(os::exists(path::join(sandbox, regularFile)));
+
+  Clock::resume();
+  driver.stop();
+  driver.join();
+}
+#endif // __linux__
 
 } // namespace tests {
 } // namespace internal {

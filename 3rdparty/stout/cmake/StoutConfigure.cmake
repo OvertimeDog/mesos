@@ -33,6 +33,7 @@ endif (NOT WIN32)
 set(STOUT_DEPENDENCIES
   ${STOUT_DEPENDENCIES}
   ${BOOST_TARGET}
+  ${ELFIO_TARGET}
   ${GLOG_TARGET}
   ${NVML_TARGET}
   ${PROTOBUF_TARGET}
@@ -55,6 +56,7 @@ set(STOUT_INCLUDE_DIRS
   ${STOUT_INCLUDE_DIR}
   ${APR_INCLUDE_DIR}
   ${BOOST_INCLUDE_DIR}
+  ${ELFIO_INCLUDE_DIR}
   ${GLOG_INCLUDE_DIR}
   ${NVML_INCLUDE_DIR}
   ${PICOJSON_INCLUDE_DIR}
@@ -77,10 +79,8 @@ endif (WIN32)
 ########################################################################
 set(STOUT_LIB_DIRS
   ${STOUT_LIB_DIRS}
-  ${APR_LIBS}
   ${GLOG_LIB_DIR}
   ${PROTOBUF_LIB_DIR}
-  ${SVN_LIBS}
   )
 
 if (WIN32)
@@ -97,6 +97,7 @@ endif (WIN32)
 set(STOUT_LIBS
   ${STOUT_LIBS}
   ${CMAKE_THREAD_LIBS_INIT}
+  ${APR_LIBS}
   ${CURL_LFLAG}
   ${GLOG_LFLAG}
   ${SVN_LIBS}
@@ -109,6 +110,7 @@ if (WIN32)
     ${ZLIB_LFLAG}
     ws2_32
     Mswsock
+    Secur32
     )
 else (WIN32)
   set(STOUT_LIBS

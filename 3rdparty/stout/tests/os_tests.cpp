@@ -12,7 +12,7 @@
 
 #include <stdint.h>
 
-#ifndef __linux__
+#if !defined(__linux__) && !defined(__WINDOWS__)
 #include <sys/time.h> // For gettimeofday.
 #endif
 #ifdef __FreeBSD__
@@ -39,6 +39,10 @@
 #include <stout/hashset.hpp>
 #include <stout/numify.hpp>
 #include <stout/os.hpp>
+#include <stout/os/environment.hpp>
+#include <stout/os/kill.hpp>
+#include <stout/os/killtree.hpp>
+#include <stout/os/write.hpp>
 #include <stout/stopwatch.hpp>
 #include <stout/strings.hpp>
 #include <stout/try.hpp>
@@ -50,7 +54,9 @@
 
 #include <stout/tests/utils.hpp>
 
+#ifndef __WINDOWS__
 using os::Exec;
+#endif // __WINDOWS__
 using os::Fork;
 using os::Process;
 using os::ProcessTree;
@@ -61,25 +67,13 @@ using std::string;
 using std::vector;
 
 
-#ifdef __FreeBSD__
-static bool isJailed() {
-  int mib[4];
-  size_t len = 4;
-  ::sysctlnametomib("security.jail.jailed", mib, &len);
-  Try<int> jailed = os::sysctl(mib[0], mib[1], mib[2]).integer();
-  if (jailed.isSome()) {
-      return jailed.get() == 1;
-  }
-
-  return false;
-}
-#endif
-
-
 class OsTest : public TemporaryDirectoryTest {};
 
 
-TEST_F(OsTest, Environment)
+// TODO(hausdorff): Enable this test on Windows. Currently setting an
+// environment variable to the blank string will cause the environment variable
+// to be deleted on Windows. See MESOS-5880.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Environment)
 {
   // Make sure the environment has some entries with '=' in the value.
   os::setenv("SOME_SPECIAL_FLAG", "--flag=foobar");
@@ -102,10 +96,22 @@ TEST_F(OsTest, Environment)
 }
 
 
+TEST_F(OsTest, Argv)
+{
+  vector<string> args = {"arg0", "arg1", "arg2"};
+
+  os::raw::Argv _argv(args);
+  char** argv = _argv;
+  for (size_t i = 0; i < args.size(); i++) {
+    EXPECT_EQ(args[i], argv[i]);
+  }
+}
+
+
 TEST_F(OsTest, System)
 {
   EXPECT_EQ(0, os::system("exit 0"));
-  EXPECT_EQ(0, os::system("sleep 0"));
+  EXPECT_EQ(0, os::system(SLEEP_COMMAND(0)));
   EXPECT_NE(0, os::system("exit 1"));
   EXPECT_NE(0, os::system("invalid.command"));
 
@@ -115,7 +121,8 @@ TEST_F(OsTest, System)
 }
 
 
-TEST_F(OsTest, Cloexec)
+// NOTE: Disabled because `os::cloexec` is not implemented on Windows.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Cloexec)
 {
   Try<int> fd = os::open(
       "cloexec",
@@ -124,6 +131,9 @@ TEST_F(OsTest, Cloexec)
 
   ASSERT_SOME(fd);
   EXPECT_SOME_TRUE(os::isCloexec(fd.get()));
+
+  ASSERT_SOME(os::unsetCloexec(fd.get()));
+  EXPECT_SOME_FALSE(os::isCloexec(fd.get()));
 
   close(fd.get());
 
@@ -135,10 +145,15 @@ TEST_F(OsTest, Cloexec)
   ASSERT_SOME(fd);
   EXPECT_SOME_FALSE(os::isCloexec(fd.get()));
 
+  ASSERT_SOME(os::cloexec(fd.get()));
+  EXPECT_SOME_TRUE(os::isCloexec(fd.get()));
+
   close(fd.get());
 }
 
 
+// NOTE: Disabled because `os::nonblock` doesn't exist on Windows.
+#ifndef __WINDOWS__
 TEST_F(OsTest, Nonblock)
 {
   int pipes[2];
@@ -156,15 +171,19 @@ TEST_F(OsTest, Nonblock)
   close(pipes[1]);
 
   EXPECT_ERROR(os::nonblock(pipes[0]));
-  EXPECT_ERROR(os::nonblock(pipes[0]));
+  EXPECT_ERROR(os::nonblock(pipes[1]));
 }
+#endif // __WINDOWS__
 
 
+// TODO(hausdorff): Fix this issue and enable the test on Windows. It fails
+// because `os::size` is not following symlinks correctly on Windows. See
+// MESOS-5939.
 // Tests whether a file's size is reported by os::stat::size as expected.
 // Tests all four combinations of following a link or not and of a file
 // or a link as argument. Also tests that an error is returned for a
 // non-existing file.
-TEST_F(OsTest, Size)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Size)
 {
   const string file = path::join(os::getcwd(), UUID::random().toString());
 
@@ -216,7 +235,9 @@ TEST_F(OsTest, BootId)
 }
 
 
-TEST_F(OsTest, Sleep)
+// TODO(hausdorff): Enable test on Windows after we fix. The test hangs. See
+// MESOS-3441.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Sleep)
 {
   Duration duration = Milliseconds(10);
   Stopwatch stopwatch;
@@ -250,7 +271,7 @@ TEST_F(OsTest, Sysctl)
   ASSERT_SOME(maxproc);
 
   // Table test.
-  Try<vector<kinfo_proc> > processes =
+  Try<vector<kinfo_proc>> processes =
     os::sysctl(CTL_KERN, KERN_PROC, KERN_PROC_ALL).table(maxproc.get());
 
   ASSERT_SOME(processes);
@@ -265,7 +286,7 @@ TEST_F(OsTest, Sysctl)
 #endif // __APPLE__
   }
 
-  EXPECT_EQ(1, pids.count(getpid()));
+  EXPECT_EQ(1u, pids.count(getpid()));
 
   // Timeval test.
   Try<timeval> bootTime = os::sysctl(CTL_KERN, KERN_BOOTTIME).time();
@@ -280,17 +301,19 @@ TEST_F(OsTest, Sysctl)
 #endif // __APPLE__ || __FreeBSD__
 
 
+// TODO(hausdorff): Enable when we implement `Fork` and `Exec`. See MESOS-3638.
+#ifndef __WINDOWS__
 TEST_F(OsTest, Children)
 {
-  Try<set<pid_t> > children = os::children(getpid());
+  Try<set<pid_t>> children = os::children(getpid());
 
   ASSERT_SOME(children);
   EXPECT_EQ(0u, children.get().size());
 
   Try<ProcessTree> tree =
     Fork(None(),                   // Child.
-         Fork(Exec("sleep 10")),   // Grandchild.
-         Exec("sleep 10"))();
+         Fork(Exec(SLEEP_COMMAND(10))),   // Grandchild.
+         Exec(SLEEP_COMMAND(10)))();
 
   ASSERT_SOME(tree);
   ASSERT_EQ(1u, tree.get().children.size());
@@ -345,10 +368,10 @@ TEST_F(OsTest, Killtree)
          Fork(None(),                      // Grandchild.
               Fork(None(),                 // Great-grandchild.
                    Fork(&dosetsid,         // Great-great-granchild.
-                        Exec("sleep 10")),
-                   Exec("sleep 10")),
+                        Exec(SLEEP_COMMAND(10))),
+                   Exec(SLEEP_COMMAND(10))),
               Exec("exit 0")),
-         Exec("sleep 10"))();
+         Exec(SLEEP_COMMAND(10)))();
 
   ASSERT_SOME(tree);
 
@@ -400,7 +423,7 @@ TEST_F(OsTest, Killtree)
 
   // Kill the process tree and follow sessions and groups to make sure
   // we cross the broken link due to the grandchild.
-  Try<list<ProcessTree> > trees =
+  Try<list<ProcessTree>> trees =
     os::killtree(child, SIGKILL, true, true);
 
   ASSERT_SOME(trees);
@@ -467,8 +490,8 @@ TEST_F(OsTest, KilltreeNoRoot)
     Fork(&dosetsid,       // Child.
          Fork(None(),     // Grandchild.
               Fork(None(),
-                   Exec("sleep 100")),
-              Exec("sleep 100")),
+                   Exec(SLEEP_COMMAND(100))),
+              Exec(SLEEP_COMMAND(100))),
          Exec("exit 0"))();
   ASSERT_SOME(tree);
 
@@ -631,8 +654,7 @@ TEST_F(OsTest, ProcessExists)
   int status;
 
   EXPECT_EQ(pid, ::waitpid(pid, &status, 0));
-  EXPECT_TRUE(WIFSIGNALED(status));
-  EXPECT_EQ(SIGKILL, WTERMSIG(status));
+  EXPECT_WTERMSIG_EQ(SIGKILL, status);
 
   EXPECT_FALSE(os::exists(pid));
 }
@@ -671,13 +693,18 @@ TEST_F(OsTest, User)
     strings::split(strings::trim(gids_.get(), strings::ANY, "\n"), " ");
 
   ASSERT_SOME(tokens);
+  std::sort(tokens.get().begin(), tokens.get().end());
 
   Try<vector<gid_t>> gids = os::getgrouplist(user.get());
   EXPECT_SOME(gids);
 
-  for (int i = 0; i < gids.get().size(); i++) {
-    EXPECT_EQ(tokens.get()[i], stringify(gids.get()[i]));
+  vector<string> expected_gids;
+  foreach (gid_t gid, gids.get()) {
+    expected_gids.push_back(stringify(gid));
   }
+  std::sort(expected_gids.begin(), expected_gids.end());
+
+  EXPECT_EQ(tokens.get(), expected_gids);
 
   EXPECT_SOME(os::setgid(gid.get()));
 
@@ -689,11 +716,28 @@ TEST_F(OsTest, User)
   EXPECT_SOME(os::setgroups(gids.get(), uid.get()));
   EXPECT_SOME(os::setuid(uid.get()));
 }
+#endif // __WINDOWS__
 
 
+TEST_F(OsTest, TrivialUser)
+{
+  const Result<string> user1 = os::user();
+  ASSERT_SOME(user1);
+  ASSERT_NE("", user1.get());
+
+#ifdef __WINDOWS__
+  const Result<string> user2 = os::user(INT_MAX);
+  ASSERT_ERROR(user2);
+#endif // __WINDOWS__
+}
+
+
+// TODO(hausdorff): Look into enabling this on Windows. Right now,
+// `LD_LIBRARY_PATH` doesn't exist on Windows, so `setPaths` doesn't work. See
+// MESOS-5940.
 // Test setting/resetting/appending to LD_LIBRARY_PATH environment
 // variable (DYLD_LIBRARY_PATH on OS X).
-TEST_F(OsTest, Libraries)
+TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Libraries)
 {
   const string path1 = "/tmp/path1";
   const string path2 = "/tmp/path1";
@@ -731,7 +775,9 @@ TEST_F(OsTest, Libraries)
 }
 
 
-TEST_F(OsTest, Shell)
+// TODO(hausdorff): Port this test to Windows; these shell commands as they
+// exist now don't make much sense to the Windows cmd prompt. See MESOS-3441.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Shell)
 {
   Try<string> result = os::shell("echo %s", "hello world");
   EXPECT_SOME_EQ("hello world\n", result);
@@ -758,8 +804,17 @@ TEST_F(OsTest, Shell)
 }
 
 
+// NOTE: Disabled on Windows because `mknod` does not exist.
+#ifndef __WINDOWS__
 TEST_F(OsTest, Mknod)
 {
+#ifdef __FreeBSD__
+  // If we're in a jail on FreeBSD, we can't use mknod.
+  if (isJailed()) {
+      return;
+  }
+#endif
+
   // mknod requires root permission.
   Result<string> user = os::user();
   ASSERT_SOME(user);
@@ -786,15 +841,19 @@ TEST_F(OsTest, Mknod)
 
   EXPECT_SOME(os::rm(another));
 }
+#endif // __WINDOWS__
 
 
-TEST_F(OsTest, Realpath)
+// TODO(hausdorff): Look into enabling this test on Windows. Currently it is
+// not possible to create a symlink on Windows unless the target exists. See
+// MESOS-5881.
+TEST_F_TEMP_DISABLED_ON_WINDOWS(OsTest, Realpath)
 {
   // Create a file.
   const Try<string> _testFile = os::mktemp();
   ASSERT_SOME(_testFile);
   ASSERT_SOME(os::touch(_testFile.get()));
-  const string testFile = _testFile.get();
+  const string& testFile = _testFile.get();
 
   // Create a symlink pointing to a file.
   const string testLink = UUID::random().toString();
@@ -823,6 +882,8 @@ TEST_F(OsTest, Realpath)
 }
 
 
+// NOTE: Disabled on Windows because `which` doesn't exist.
+#ifndef __WINDOWS__
 TEST_F(OsTest, Which)
 {
   // TODO(jieyu): Test PATH search ordering and file execution bit.
@@ -832,3 +893,4 @@ TEST_F(OsTest, Which)
   which = os::which("bar");
   EXPECT_NONE(which);
 }
+#endif // __WINDOWS__

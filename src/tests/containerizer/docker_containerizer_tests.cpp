@@ -26,6 +26,7 @@
 #include <process/subprocess.hpp>
 
 #include <stout/duration.hpp>
+#include <stout/uuid.hpp>
 
 #ifdef __linux__
 #include "linux/cgroups.hpp"
@@ -43,6 +44,7 @@
 
 #include "tests/flags.hpp"
 #include "tests/mesos.hpp"
+#include "tests/mock_docker.hpp"
 
 using namespace mesos::internal::slave::paths;
 using namespace mesos::internal::slave::state;
@@ -59,6 +61,7 @@ using mesos::internal::slave::Slave;
 using mesos::master::detector::MasterDetector;
 
 using mesos::slave::ContainerLogger;
+using mesos::slave::ContainerTermination;
 
 using std::list;
 using std::string;
@@ -207,7 +210,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Launch_Executor)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -251,10 +254,10 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Launch_Executor)
   task.mutable_executor()->CopyFrom(executorInfo);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _))
+  EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&dockerContainerizer,
-                           &MockDockerContainerizer::_launchExecutor)));
+                           &MockDockerContainerizer::_launch)));
 
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
@@ -272,13 +275,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Launch_Executor)
 
   ASSERT_TRUE(exists(docker, slaveId, containerId.get()));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   ASSERT_FALSE(
     exists(docker, slaveId, containerId.get(), ContainerState::RUNNING));
@@ -334,7 +338,7 @@ TEST_F(DockerContainerizerTest, DISABLED_ROOT_DOCKER_Launch_Executor_Bridged)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -379,10 +383,10 @@ TEST_F(DockerContainerizerTest, DISABLED_ROOT_DOCKER_Launch_Executor_Bridged)
   task.mutable_executor()->CopyFrom(executorInfo);
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _))
+  EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&dockerContainerizer,
-                           &MockDockerContainerizer::_launchExecutor)));
+                           &MockDockerContainerizer::_launch)));
 
   Future<TaskStatus> statusRunning;
   Future<TaskStatus> statusFinished;
@@ -400,13 +404,14 @@ TEST_F(DockerContainerizerTest, DISABLED_ROOT_DOCKER_Launch_Executor_Bridged)
 
   ASSERT_TRUE(exists(docker, slaveId, containerId.get()));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   ASSERT_FALSE(
     exists(docker, slaveId, containerId.get(), ContainerState::RUNNING));
@@ -453,7 +458,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Launch)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -544,20 +549,22 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Launch)
 
   EXPECT_SOME_FALSE(find);
 
-  // Now verify that the TaskStatus contains the container IP address.
-  ASSERT_TRUE(statusRunning.get().has_container_status());
-  EXPECT_EQ(1, statusRunning.get().container_status().network_infos().size());
-  EXPECT_EQ(1, statusRunning.get().container_status().network_infos(0).ip_addresses().size()); // NOLINT(whitespace/line_length)
+  // Now verify the ContainerStatus fields in the TaskStatus.
+  ASSERT_TRUE(statusRunning->has_container_status());
+  EXPECT_TRUE(statusRunning->container_status().has_container_id());
+  ASSERT_EQ(1, statusRunning->container_status().network_infos().size());
+  EXPECT_EQ(1, statusRunning->container_status().network_infos(0).ip_addresses().size()); // NOLINT(whitespace/line_length)
 
   ASSERT_TRUE(exists(docker, slaveId, containerId.get()));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   ASSERT_FALSE(
     exists(docker, slaveId, containerId.get(), ContainerState::RUNNING));
@@ -603,7 +610,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Kill)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -662,7 +669,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Kill)
   EXPECT_CALL(sched, statusUpdate(&driver, _))
     .WillOnce(FutureArg<1>(&statusKilled));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.killTask(task.task_id());
@@ -671,6 +678,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Kill)
   EXPECT_EQ(TASK_KILLED, statusKilled.get().state());
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   ASSERT_FALSE(
     exists(docker, slaveId, containerId.get(), ContainerState::RUNNING));
@@ -728,7 +736,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_TaskKillingCapability)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -788,7 +796,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_TaskKillingCapability)
     .WillOnce(FutureArg<1>(&statusKilling))
     .WillOnce(FutureArg<1>(&statusKilled));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.killTask(task.task_id());
@@ -800,6 +808,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_TaskKillingCapability)
   EXPECT_EQ(TASK_KILLED, statusKilled->state());
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   ASSERT_FALSE(
     exists(docker, slaveId, containerId.get(), ContainerState::RUNNING));
@@ -850,7 +859,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Usage)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -937,12 +946,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Usage)
   EXPECT_LT(0, statistics.cpus_system_time_secs());
   EXPECT_GT(statistics.mem_rss_bytes(), 0u);
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   dockerContainerizer.destroy(containerId.get());
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   // Usage() should fail again since the container is destroyed.
   Future<ResourceStatistics> usage =
@@ -995,7 +1005,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Update)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -1229,18 +1239,20 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Recover)
 
   AWAIT_READY(recover);
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId);
 
   ASSERT_FALSE(termination.isFailed());
 
-  AWAIT_FAILED(dockerContainerizer.wait(reapedContainerId));
+  // The reaped container should be cleaned up and unknown at this point.
+  Future<Option<ContainerTermination>> termination2 =
+    dockerContainerizer.wait(reapedContainerId);
+
+  AWAIT_READY(termination2);
+  EXPECT_NONE(termination2.get());
 
   // Expect the orphan to be stopped!
-  AWAIT_READY(orphanRun);
-  ASSERT_SOME(orphanRun.get());
-  EXPECT_TRUE(WIFEXITED(orphanRun->get())) << orphanRun->get();
-  EXPECT_EQ(128 + SIGKILL, WEXITSTATUS(orphanRun->get())) << orphanRun->get();
+  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, orphanRun);
 }
 
 
@@ -1360,19 +1372,20 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_KillOrphanContainers)
 
   AWAIT_READY(recover);
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId);
 
   ASSERT_FALSE(termination.isFailed());
 
   // The orphaned container should be correctly cleaned up.
-  AWAIT_FAILED(dockerContainerizer.wait(orphanContainerId));
+  Future<Option<ContainerTermination>> termination2 =
+    dockerContainerizer.wait(orphanContainerId);
+
+  AWAIT_READY(termination2);
+  EXPECT_NONE(termination2.get());
   ASSERT_FALSE(exists(docker, oldSlaveId, orphanContainerId));
 
-  AWAIT_READY(orphanRun);
-  ASSERT_SOME(orphanRun.get());
-  EXPECT_TRUE(WIFEXITED(orphanRun->get())) << orphanRun->get();
-  EXPECT_EQ(128 + SIGKILL, WEXITSTATUS(orphanRun->get())) << orphanRun->get();
+  AWAIT_EXPECT_WEXITSTATUS_EQ(128 + SIGKILL, orphanRun);
 }
 
 
@@ -1434,6 +1447,89 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SkipRecoverNonDocker)
   // A MesosContainerizer task shouldn't be recovered by
   // DockerContainerizer.
   EXPECT_EQ(0u, containers.get().size());
+}
+
+
+// This test checks the docker containerizer doesn't recover containers
+// with malformed uuid.
+TEST_F(DockerContainerizerTest, ROOT_DOCKER_SkipRecoverMalformedUUID)
+{
+  MockDocker* mockDocker =
+    new MockDocker(tests::flags.docker, tests::flags.docker_socket);
+
+  Shared<Docker> docker(mockDocker);
+
+  slave::Flags flags = CreateSlaveFlags();
+  flags.docker_kill_orphans = true;
+
+  Fetcher fetcher;
+
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(flags.container_logger);
+
+  ASSERT_SOME(logger);
+
+  MockDockerContainerizer dockerContainerizer(
+      flags,
+      &fetcher,
+      Owned<ContainerLogger>(logger.get()),
+      docker);
+
+  SlaveID slaveId;
+  slaveId.set_value("s1");
+  ContainerID containerId;
+  containerId.set_value("malformedUUID");
+
+  string container = containerName(slaveId, containerId);
+
+  // Clean up container if it still exists.
+  ASSERT_TRUE(docker->rm(container, true).await(Seconds(30)));
+
+  Resources resources = Resources::parse("cpus:1;mem:512").get();
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+
+  // TODO(tnachen): Use local image to test if possible.
+  ContainerInfo::DockerInfo dockerInfo;
+  dockerInfo.set_image("alpine");
+  containerInfo.mutable_docker()->CopyFrom(dockerInfo);
+
+  CommandInfo commandInfo;
+  commandInfo.set_value("sleep 1000");
+
+  Future<Option<int>> run =
+    docker->run(
+        containerInfo,
+        commandInfo,
+        container,
+        flags.work_dir,
+        flags.sandbox_directory,
+        resources);
+
+  ASSERT_TRUE(
+    exists(docker, slaveId, containerId, ContainerState::RUNNING));
+
+  SlaveState slaveState;
+  slaveState.id = slaveId;
+  FrameworkState frameworkState;
+
+  ExecutorID execId;
+  execId.set_value("e1");
+
+  ExecutorState execState;
+  ExecutorInfo execInfo;
+  execState.info = execInfo;
+
+  FrameworkID frameworkId;
+  frameworkState.executors.put(execId, execState);
+  slaveState.frameworks.put(frameworkId, frameworkState);
+
+  Future<Nothing> recover = dockerContainerizer.recover(slaveState);
+  AWAIT_READY(recover);
+
+  // The container should still exist and should not get killed
+  // by containerizer recovery.
+  ASSERT_TRUE(exists(docker, slaveId, containerId));
 }
 
 
@@ -1513,7 +1609,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchWithPersistentVolumes)
   task.mutable_task_id()->set_value("1");
   task.mutable_slave_id()->CopyFrom(offer.slave_id());
   task.mutable_resources()->CopyFrom(
-      Resources::parse("cpus:1;mem:64;").get() + volume);
+      Resources::parse("cpus:1;mem:64").get() + volume);
 
   CommandInfo command;
   command.set_value("echo abc > " +
@@ -1563,13 +1659,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchWithPersistentVolumes)
   AWAIT_READY(statusFinished);
   EXPECT_EQ(TASK_FINISHED, statusFinished.get().state());
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   ASSERT_FALSE(
     exists(docker, slaveId, containerId.get(), ContainerState::RUNNING));
@@ -1673,7 +1770,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_RecoverPersistentVolumes)
   task.mutable_task_id()->set_value("1");
   task.mutable_slave_id()->CopyFrom(offer.slave_id());
   task.mutable_resources()->CopyFrom(
-      Resources::parse("cpus:1;mem:64;").get() + volume);
+      Resources::parse("cpus:1;mem:64").get() + volume);
 
   CommandInfo command;
   command.set_value("sleep 1000");
@@ -1733,12 +1830,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_RecoverPersistentVolumes)
   // Wait until containerizer recover is complete.
   AWAIT_READY(_recover);
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer->wait(containerId.get());
 
   dockerContainerizer->destroy(containerId.get());
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 
   Try<fs::MountInfoTable> table = fs::MountInfoTable::read();
   EXPECT_SOME(table);
@@ -1835,7 +1933,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_RecoverOrphanedPersistentVolumes)
   task.mutable_task_id()->set_value("1");
   task.mutable_slave_id()->CopyFrom(offer.slave_id());
   task.mutable_resources()->CopyFrom(
-      Resources::parse("cpus:1;mem:64;").get() + volume);
+      Resources::parse("cpus:1;mem:64").get() + volume);
 
   CommandInfo command;
   command.set_value("sleep 1000");
@@ -1970,7 +2068,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Logs)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2108,7 +2206,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2241,7 +2339,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Override)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2377,7 +2475,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Args)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2402,7 +2500,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_Default_CMD_Args)
   CommandInfo command;
   command.set_shell(false);
 
-  // We should also be able to skip setting the comamnd value and just
+  // We should also be able to skip setting the command value and just
   // set the arguments and those should also get passed through to the
   // entrypoint!
   command.add_arguments(uuid);
@@ -2515,7 +2613,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2593,7 +2691,6 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
 
   // Ensure the executor re-registers.
   AWAIT_READY(reregisterExecutorMessage);
-  UPID executorPid = reregisterExecutorMessage.get().from;
 
   ReregisterExecutorMessage reregister;
   reregister.ParseFromString(reregisterExecutorMessage.get().body);
@@ -2610,13 +2707,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_SlaveRecoveryTaskContainer)
 
   ASSERT_TRUE(exists(docker, slaveId, containerId.get()));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer->wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 }
 
 
@@ -2678,7 +2776,7 @@ TEST_F(DockerContainerizerTest,
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2721,11 +2819,11 @@ TEST_F(DockerContainerizerTest,
 
   Future<ContainerID> containerId;
   Future<SlaveID> slaveId;
-  EXPECT_CALL(*dockerContainerizer, launch(_, _, _, _, _, _, _))
+  EXPECT_CALL(*dockerContainerizer, launch(_, _, _, _, _, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
-                    FutureArg<4>(&slaveId),
+                    FutureArg<5>(&slaveId),
                     Invoke(dockerContainerizer.get(),
-                           &MockDockerContainerizer::_launchExecutor)));
+                           &MockDockerContainerizer::_launch)));
 
   // We need to wait until the container's pid has been been
   // checkpointed so that when the next slave recovers it won't treat
@@ -2781,7 +2879,6 @@ TEST_F(DockerContainerizerTest,
 
   // Ensure the executor re-registers.
   AWAIT_READY(reregisterExecutorMessage);
-  UPID executorPid = reregisterExecutorMessage.get().from;
 
   ReregisterExecutorMessage reregister;
   reregister.ParseFromString(reregisterExecutorMessage.get().body);
@@ -2853,7 +2950,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -2947,13 +3044,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_NC_PortMapping)
   // to stdout by the docker container running nc -l.
   EXPECT_TRUE(containsLine(lines, uuid));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 }
 
 
@@ -3000,7 +3098,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchSandboxWithColon)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -3055,13 +3153,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_LaunchSandboxWithColon)
 
   ASSERT_TRUE(exists(docker, slaveId, containerId.get()));
 
-  Future<containerizer::Termination> termination =
+  Future<Option<ContainerTermination>> termination =
     dockerContainerizer.wait(containerId.get());
 
   driver.stop();
   driver.join();
 
   AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 }
 
 
@@ -3118,7 +3217,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhileFetching)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -3238,7 +3337,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhilePulling)
   EXPECT_CALL(sched, registered(&driver, _, _))
     .WillOnce(FutureArg<1>(&frameworkId));
 
-  Future<vector<Offer> > offers;
+  Future<vector<Offer>> offers;
   EXPECT_CALL(sched, resourceOffers(&driver, _))
     .WillOnce(FutureArg<1>(&offers))
     .WillRepeatedly(Return()); // Ignore subsequent offers.
@@ -3303,6 +3402,28 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyWhilePulling)
 }
 
 
+// Ensures the containerizer responds correctly (false Future) to
+// a request to destroy an unknown container.
+TEST_F(DockerContainerizerTest, ROOT_DOCKER_DestroyUnknownContainer)
+{
+  slave::Flags flags = CreateSlaveFlags();
+
+  Fetcher fetcher;
+
+  Try<DockerContainerizer*> create =
+    DockerContainerizer::create(flags, &fetcher);
+
+  ASSERT_SOME(create);
+
+  DockerContainerizer* containerizer = create.get();
+
+  ContainerID containerId;
+  containerId.set_value(UUID::random().toString());
+
+  AWAIT_EXPECT_FALSE(containerizer->destroy(containerId));
+}
+
+
 // This test checks that when a docker containerizer update failed
 // and the container failed before the executor started, the executor
 // is properly killed and cleaned up.
@@ -3343,9 +3464,13 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_ExecutorCleanupWhenLaunchFailed)
     StartSlave(detector.get(), &dockerContainerizer);
   ASSERT_SOME(slave);
 
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.add_capabilities()->set_type(
+      FrameworkInfo::Capability::PARTITION_AWARE);
+
   MockScheduler sched;
   MesosSchedulerDriver driver(
-      &sched, DEFAULT_FRAMEWORK_INFO, master.get()->pid, DEFAULT_CREDENTIAL);
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
 
   Future<FrameworkID> frameworkId;
   EXPECT_CALL(sched, registered(&driver, _, _))
@@ -3384,9 +3509,9 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_ExecutorCleanupWhenLaunchFailed)
   task.mutable_command()->CopyFrom(command);
   task.mutable_container()->CopyFrom(containerInfo);
 
-  Future<TaskStatus> statusLost;
+  Future<TaskStatus> statusGone;
   EXPECT_CALL(sched, statusUpdate(&driver, _))
-    .WillOnce(FutureArg<1>(&statusLost));
+    .WillOnce(FutureArg<1>(&statusGone));
 
   Future<ContainerID> containerId;
   EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _, _))
@@ -3402,10 +3527,10 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_ExecutorCleanupWhenLaunchFailed)
 
   AWAIT_READY_FOR(containerId, Seconds(60));
 
-  AWAIT_READY(statusLost);
-  EXPECT_EQ(TASK_LOST, statusLost.get().state());
+  AWAIT_READY(statusGone);
+  EXPECT_EQ(TASK_GONE, statusGone.get().state());
   EXPECT_EQ(TaskStatus::REASON_CONTAINER_UPDATE_FAILED,
-            statusLost.get().reason());
+            statusGone.get().reason());
 
   driver.stop();
   driver.join();
@@ -3673,7 +3798,7 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DockerInspectDiscard)
                            Invoke((MockDocker*) docker.get(),
                                   &MockDocker::_inspect)));
 
-  EXPECT_CALL(*mockDocker, run(_, _, _, _, _, _, _, _, _))
+  EXPECT_CALL(*mockDocker, run(_, _, _, _, _, _, _, _, _, _))
     .WillOnce(Return(Failure("Run failed")));
 
   Owned<MasterDetector> detector = master.get()->createDetector();
@@ -3736,10 +3861,14 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DockerInspectDiscard)
     .WillOnce(FutureArg<1>(&statusFailed));
 
   Future<ContainerID> containerId;
-  EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _))
+  EXPECT_CALL(dockerContainerizer, launch(_, _, _, _, _, _, _, _))
     .WillOnce(DoAll(FutureArg<0>(&containerId),
                     Invoke(&dockerContainerizer,
-                           &MockDockerContainerizer::_launchExecutor)));
+                           &MockDockerContainerizer::_launch)));
+
+  Future<Nothing> executorLost;
+  EXPECT_CALL(sched, executorLost(&driver, executorId, _, _))
+    .WillOnce(FutureSatisfy(&executorLost));
 
   driver.launchTasks(offers.get()[0].id(), {task});
 
@@ -3748,10 +3877,181 @@ TEST_F(DockerContainerizerTest, ROOT_DOCKER_DockerInspectDiscard)
   AWAIT_READY(statusFailed);
   EXPECT_EQ(TASK_FAILED, statusFailed.get().state());
 
+  AWAIT_READY(executorLost);
+
   AWAIT_DISCARDED(inspect);
 
   driver.stop();
   driver.join();
+}
+
+
+// Ensures the containerizer responds correctly (returns None)
+// to a request to wait on an unknown container.
+TEST_F(DockerContainerizerTest, ROOT_DOCKER_WaitUnknownContainer)
+{
+  slave::Flags flags = CreateSlaveFlags();
+
+  Fetcher fetcher;
+
+  Try<DockerContainerizer*> create =
+    DockerContainerizer::create(flags, &fetcher);
+
+  ASSERT_SOME(create);
+
+  DockerContainerizer* containerizer = create.get();
+
+  ContainerID containerId;
+  containerId.set_value(UUID::random().toString());
+
+  Future<Option<ContainerTermination>> wait = containerizer->wait(containerId);
+
+  AWAIT_READY(wait);
+  EXPECT_NONE(wait.get());
+}
+
+
+// This test ensures that a task will transition straight from `TASK_KILLING` to
+// `TASK_KILLED`, even if the health check begins to fail during the kill policy
+// grace period.
+//
+// TODO(gkleiman): this test takes about 7 seconds to run, consider using mock
+// tasks and health checkers to speed it up.
+TEST_F(DockerContainerizerTest, ROOT_DOCKER_NoTransitionFromKillingToRunning)
+{
+  Shared<Docker> docker(new MockDocker(
+      tests::flags.docker, tests::flags.docker_socket));
+
+  Try<Owned<cluster::Master>> master = StartMaster();
+  ASSERT_SOME(master);
+
+  slave::Flags agentFlags = CreateSlaveFlags();
+
+  Fetcher fetcher;
+
+  Try<ContainerLogger*> logger =
+    ContainerLogger::create(agentFlags.container_logger);
+  ASSERT_SOME(logger);
+
+  MockDockerContainerizer containerizer(
+      agentFlags,
+      &fetcher,
+      Owned<ContainerLogger>(logger.get()),
+      docker);
+
+  Owned<MasterDetector> detector = master.get()->createDetector();
+
+  Try<Owned<cluster::Slave>> agent =
+    StartSlave(detector.get(), &containerizer, agentFlags);
+  ASSERT_SOME(agent);
+
+  // Start the framework with the task killing capability.
+  FrameworkInfo::Capability capability;
+  capability.set_type(FrameworkInfo::Capability::TASK_KILLING_STATE);
+
+  FrameworkInfo frameworkInfo = DEFAULT_FRAMEWORK_INFO;
+  frameworkInfo.add_capabilities()->CopyFrom(capability);
+
+  MockScheduler sched;
+  MesosSchedulerDriver driver(
+      &sched, frameworkInfo, master.get()->pid, DEFAULT_CREDENTIAL);
+
+  EXPECT_CALL(sched, registered(&driver, _, _));
+
+  Future<vector<Offer>> offers;
+  EXPECT_CALL(sched, resourceOffers(&driver, _))
+    .WillOnce(FutureArg<1>(&offers))
+    .WillRepeatedly(Return()); // Ignore subsequent offers.
+
+  driver.start();
+
+  AWAIT_READY(offers);
+  EXPECT_EQ(1u, offers->size());
+
+  const uint16_t testPort = getFreePort().get();
+
+  // Launch a HTTP server until SIGTERM is received, then sleep for
+  // 15 seconds to let the health check fail.
+  const string command = strings::format(
+      "trap \"sleep 15\" SIGTERM && nc -lk -p %u -e echo",
+      testPort).get();
+
+  TaskInfo task = createTask(offers->front(), command);
+
+  // The docker container runs in host network mode.
+  //
+  // TODO(tnachen): Use local image to test if possible.
+  ContainerInfo containerInfo;
+  containerInfo.set_type(ContainerInfo::DOCKER);
+  containerInfo.mutable_docker()->set_image("alpine");
+  containerInfo.mutable_docker()->set_network(
+      ContainerInfo::DockerInfo::HOST);
+
+  task.mutable_container()->CopyFrom(containerInfo);
+
+  // Set `grace_period_seconds` here because it takes some time to launch
+  // Netcat to serve requests.
+  HealthCheck healthCheck;
+  healthCheck.set_type(HealthCheck::TCP);
+  healthCheck.mutable_tcp()->set_port(testPort);
+  healthCheck.set_delay_seconds(0);
+  healthCheck.set_grace_period_seconds(15);
+  healthCheck.set_interval_seconds(0);
+
+  task.mutable_health_check()->CopyFrom(healthCheck);
+
+  // Set the kill policy grace period to 5 seconds.
+  KillPolicy killPolicy;
+  killPolicy.mutable_grace_period()->set_nanoseconds(Seconds(5).ns());
+
+  task.mutable_kill_policy()->CopyFrom(killPolicy);
+
+  Future<ContainerID> containerId;
+  EXPECT_CALL(containerizer, launch(_, _, _, _, _, _, _, _))
+    .WillOnce(DoAll(FutureArg<0>(&containerId),
+                    Invoke(&containerizer,
+                           &MockDockerContainerizer::_launch)));
+
+  Future<TaskStatus> statusRunning;
+  Future<TaskStatus> statusHealthy;
+  Future<TaskStatus> statusKilling;
+  Future<TaskStatus> statusKilled;
+
+  EXPECT_CALL(sched, statusUpdate(&driver, _))
+    .WillOnce(FutureArg<1>(&statusRunning))
+    .WillOnce(FutureArg<1>(&statusHealthy))
+    .WillOnce(FutureArg<1>(&statusKilling))
+    .WillOnce(FutureArg<1>(&statusKilled));
+
+  driver.launchTasks(offers->front().id(), {task});
+
+  AWAIT_READY_FOR(containerId, Seconds(60));
+  AWAIT_READY_FOR(statusRunning, Seconds(60));
+  EXPECT_EQ(TASK_RUNNING, statusRunning.get().state());
+
+  AWAIT_READY(statusHealthy);
+  EXPECT_EQ(TASK_RUNNING, statusHealthy.get().state());
+  EXPECT_TRUE(statusHealthy.get().has_healthy());
+  EXPECT_TRUE(statusHealthy.get().healthy());
+
+  driver.killTask(task.task_id());
+
+  AWAIT_READY(statusKilling);
+  EXPECT_EQ(TASK_KILLING, statusKilling->state());
+  EXPECT_FALSE(statusKilling.get().has_healthy());
+
+  AWAIT_READY(statusKilled);
+  EXPECT_EQ(TASK_KILLED, statusKilled->state());
+  EXPECT_FALSE(statusKilled.get().has_healthy());
+
+  Future<Option<ContainerTermination>> termination =
+    containerizer.wait(containerId.get());
+
+  driver.stop();
+  driver.join();
+
+  AWAIT_READY(termination);
+  EXPECT_SOME(termination.get());
 }
 
 } // namespace tests {

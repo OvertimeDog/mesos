@@ -29,9 +29,11 @@
 #include <process/owned.hpp>
 
 #include <stout/hashmap.hpp>
+#include <stout/hashset.hpp>
 #include <stout/json.hpp>
 #include <stout/jsonify.hpp>
 #include <stout/protobuf.hpp>
+#include <stout/unreachable.hpp>
 
 namespace mesos {
 
@@ -41,8 +43,15 @@ class Task;
 
 namespace internal {
 
+// Name of the default, basic authenticator.
+constexpr char DEFAULT_HTTP_AUTHENTICATOR[] = "basic";
+
+extern hashset<std::string> AUTHORIZABLE_ENDPOINTS;
+
 // Serializes a protobuf message for transmission
 // based on the HTTP content type.
+// NOTE: For streaming `contentType`, `message` would not
+// be serialized in "Record-IO" format.
 std::string serialize(
     ContentType contentType,
     const google::protobuf::Message& message);
@@ -50,20 +59,24 @@ std::string serialize(
 
 // Deserializes a string message into a protobuf message based on the
 // HTTP content type.
+// NOTE: For streaming `contentType`, `body` should not be
+// in "Record-IO" format.
 template <typename Message>
 Try<Message> deserialize(
     ContentType contentType,
     const std::string& body)
 {
   switch (contentType) {
-    case ContentType::PROTOBUF: {
+    case ContentType::PROTOBUF:
+    case ContentType::STREAMING_PROTOBUF: {
       Message message;
       if (!message.ParseFromString(body)) {
         return Error("Failed to parse body into a protobuf object");
       }
       return message;
     }
-    case ContentType::JSON: {
+    case ContentType::JSON:
+    case ContentType::STREAMING_JSON: {
       Try<JSON::Value> value = JSON::parse(body);
       if (value.isError()) {
         return Error("Failed to parse body into JSON: " + value.error());
@@ -77,6 +90,10 @@ Try<Message> deserialize(
 }
 
 
+// Returns true if the content type can be used for streaming requests.
+bool requestStreaming(ContentType contentType);
+
+
 JSON::Object model(const Resources& resources);
 JSON::Object model(const hashmap<std::string, Resources>& roleResources);
 JSON::Object model(const Attributes& attributes);
@@ -84,6 +101,7 @@ JSON::Object model(const CommandInfo& command);
 JSON::Object model(const ExecutorInfo& executorInfo);
 JSON::Array model(const Labels& labels);
 JSON::Object model(const Task& task);
+JSON::Object model(const FileInfo& fileInfo);
 
 void json(JSON::ObjectWriter* writer, const Task& task);
 
@@ -135,6 +153,45 @@ bool approveViewTask(
     const process::Owned<ObjectApprover>& tasksApprover,
     const Task& task,
     const FrameworkInfo& frameworkInfo);
+
+
+bool approveViewFlags(const process::Owned<ObjectApprover>& flagsApprover);
+
+
+// Authorizes access to an HTTP endpoint. The `method` parameter
+// determines which ACL action will be used in the authorization.
+// It is expected that the caller has validated that `method` is
+// supported by this function. Currently "GET" is supported.
+//
+// TODO(nfnt): Prefer types instead of strings
+// for `endpoint` and `method`, see MESOS-5300.
+process::Future<bool> authorizeEndpoint(
+    const std::string& endpoint,
+    const std::string& method,
+    const Option<Authorizer*>& authorizer,
+    const Option<std::string>& principal);
+
+
+bool approveViewRole(
+    const process::Owned<ObjectApprover>& rolesApprover,
+    const std::string& role);
+
+
+/**
+ * Helper function to create HTTP authenticators
+ * for a given realm and register in libprocess.
+ *
+ * @param realm name of the realm.
+ * @param authenticatorNames a vector of authenticator names.
+ * @param credentials optional credentials for BasicAuthenticator only.
+ * @return nothing if authenticators are initialized and registered to
+ *         libprocess successfully, or error if authenticators cannot
+ *         be initialized.
+ */
+Try<Nothing> initializeHttpAuthenticators(
+    const std::string& realm,
+    const std::vector<std::string>& httpAuthenticatorNames,
+    const Option<Credentials>& credentials);
 
 } // namespace mesos {
 

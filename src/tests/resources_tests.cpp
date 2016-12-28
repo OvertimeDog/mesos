@@ -15,6 +15,7 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <iostream>
 #include <set>
 #include <sstream>
 #include <string>
@@ -26,19 +27,31 @@
 #include <stout/json.hpp>
 #include <stout/protobuf.hpp>
 
+#include <mesos/resources.hpp>
+
+#include <mesos/v1/resources.hpp>
+
+#include "internal/evolve.hpp"
+
 #include "master/master.hpp"
 
 #include "tests/mesos.hpp"
+#include "tests/resources_utils.hpp"
 
 using namespace mesos::internal::master;
 
+using std::cout;
+using std::endl;
 using std::map;
 using std::ostringstream;
 using std::pair;
 using std::set;
 using std::string;
+using std::vector;
 
 using google::protobuf::RepeatedPtrField;
+
+using mesos::internal::evolve;
 
 using mesos::internal::protobuf::createLabel;
 
@@ -178,10 +191,10 @@ TEST(ResourcesTest, ParsingFromJSON)
   ASSERT_SOME(resourcesTry);
 
   Resources cpuResources(resourcesTry.get());
-  auto cpus = cpuResources.begin();
+  const Resource& cpus = *(cpuResources.begin());
 
-  ASSERT_EQ(Value::SCALAR, cpus->type());
-  EXPECT_EQ(45.55, cpus->scalar().value());
+  ASSERT_EQ(Value::SCALAR, cpus.type());
+  EXPECT_EQ(45.55, cpus.scalar().value());
 
   EXPECT_EQ(1u, cpuResources.size());
 
@@ -209,17 +222,17 @@ TEST(ResourcesTest, ParsingFromJSON)
   ASSERT_SOME(resourcesTry);
 
   Resources portResources(resourcesTry.get());
-  auto ports = portResources.begin();
+  const Resource& ports = *(portResources.begin());
 
-  EXPECT_EQ(Value::RANGES, ports->type());
-  EXPECT_EQ(2, ports->ranges().range_size());
+  EXPECT_EQ(Value::RANGES, ports.type());
+  EXPECT_EQ(2, ports.ranges().range_size());
 
   // Do not specify the ordering of ranges, only check the values.
-  if (10000 != ports->ranges().range(0).begin()) {
-    EXPECT_EQ(30000u, ports->ranges().range(0).begin());
-    EXPECT_EQ(10000u, ports->ranges().range(1).begin());
+  if (10000 != ports.ranges().range(0).begin()) {
+    EXPECT_EQ(30000u, ports.ranges().range(0).begin());
+    EXPECT_EQ(10000u, ports.ranges().range(1).begin());
   } else {
-    EXPECT_EQ(30000u, ports->ranges().range(1).begin());
+    EXPECT_EQ(30000u, ports.ranges().range(1).begin());
   }
 
   jsonString =
@@ -240,18 +253,18 @@ TEST(ResourcesTest, ParsingFromJSON)
   ASSERT_SOME(resourcesTry);
 
   Resources pandaResources(resourcesTry.get());
-  auto pandas = pandaResources.begin();
+  const Resource& pandas = *(pandaResources.begin());
 
-  EXPECT_EQ(Value::SET, pandas->type());
-  EXPECT_EQ(2, pandas->set().item_size());
-  EXPECT_EQ("pandas", pandas->name());
+  EXPECT_EQ(Value::SET, pandas.type());
+  EXPECT_EQ(2, pandas.set().item_size());
+  EXPECT_EQ("pandas", pandas.name());
 
   // Do not specify the ordering of the set's items, only check the values.
-  if ("lun_lun" != pandas->set().item(0)) {
-    EXPECT_EQ("yang_yang", pandas->set().item(0));
-    EXPECT_EQ("lun_lun", pandas->set().item(1));
+  if ("lun_lun" != pandas.set().item(0)) {
+    EXPECT_EQ("yang_yang", pandas.set().item(0));
+    EXPECT_EQ("lun_lun", pandas.set().item(1));
   } else {
-    EXPECT_EQ("yang_yang", pandas->set().item(1));
+    EXPECT_EQ("yang_yang", pandas.set().item(1));
   }
 
   jsonString =
@@ -297,9 +310,9 @@ TEST(ResourcesTest, ParsingFromJSON)
   Resources r1(resourcesTry.get());
 
   Resources r2;
-  r2 += *cpus;
-  r2 += *ports;
-  r2 += *pandas;
+  r2 += cpus;
+  r2 += ports;
+  r2 += pandas;
 
   EXPECT_EQ(r1, r2);
 }
@@ -323,11 +336,11 @@ TEST(ResourcesTest, ParsingFromJSONWithRoles)
   ASSERT_SOME(resourcesTry);
 
   Resources cpuResources(resourcesTry.get());
-  auto cpus = cpuResources.begin();
+  const Resource& cpus = *(cpuResources.begin());
 
-  ASSERT_EQ(Value::SCALAR, cpus->type());
-  EXPECT_EQ(45.55, cpus->scalar().value());
-  EXPECT_EQ("role1", cpus->role());
+  ASSERT_EQ(Value::SCALAR, cpus.type());
+  EXPECT_EQ(45.55, cpus.scalar().value());
+  EXPECT_EQ("role1", cpus.role());
 
   jsonString =
     "[\n"
@@ -345,14 +358,14 @@ TEST(ResourcesTest, ParsingFromJSONWithRoles)
   ASSERT_SOME(resourcesTry);
 
   Resources cpuResources2(resourcesTry.get());
-  auto cpus2 = cpuResources2.begin();
+  const Resource& cpus2 = *(cpuResources2.begin());
 
   Resources resources;
-  resources += *cpus2;
-  resources += *cpus;
-  resources += *cpus;
+  resources += cpus2;
+  resources += cpus;
+  resources += cpus;
 
-  EXPECT_TRUE(resources.contains(Resources(*cpus)));
+  EXPECT_TRUE(resources.contains(Resources(cpus)));
   EXPECT_EQ(145.54, resources.cpus().get());
 
   foreach (const Resource& resource, resources) {
@@ -623,14 +636,14 @@ TEST(ResourcesTest, ParsingFromJSONError)
 
   EXPECT_ERROR(Resources::parse(jsonString));
 
-  // Empty Resources.
+  // Negative Resources.
   jsonString =
     "["
     "  {"
     "    \"name\": \"panda_power\","
     "    \"type\": \"SCALAR\","
     "    \"scalar\": {"
-    "      \"value\": 0"
+    "      \"value\": -1"
     "    }"
     "  },"
     "  {"
@@ -829,6 +842,24 @@ TEST(ResourcesTest, PrintingExtendedAttributes)
   stream << disk;
   EXPECT_EQ("disk(alice)[hadoop:/hdfs:/data:rw]:1", stream.str());
 
+  // Disk resource with MOUNT type.
+  stream.str("");
+  disk.mutable_disk()->mutable_source()->set_type(
+      Resource::DiskInfo::Source::MOUNT);
+  disk.mutable_disk()->mutable_source()->mutable_mount()->set_root("/mnt1");
+  stream << disk;
+  EXPECT_EQ("disk(alice)[MOUNT:/mnt1,hadoop:/hdfs:/data:rw]:1", stream.str());
+  disk.mutable_disk()->clear_source();
+
+  // Disk resource with PATH type.
+  stream.str("");
+  disk.mutable_disk()->mutable_source()->set_type(
+      Resource::DiskInfo::Source::PATH);
+  disk.mutable_disk()->mutable_source()->mutable_path()->set_root("/mnt2");
+  stream << disk;
+  EXPECT_EQ("disk(alice)[PATH:/mnt2,hadoop:/hdfs:/data:rw]:1", stream.str());
+  disk.mutable_disk()->clear_source();
+
   // Disk resource with host path and dynamic reservation without labels.
   stream.str("");
   disk.mutable_reservation()->set_principal("hdfs-p");
@@ -874,6 +905,19 @@ TEST(ResourcesTest, PrintingScalarPrecision)
   stream.str("");
   stream << scalar;
   EXPECT_EQ("cpus(*):1.1", stream.str());
+
+  // Large integers are printed with all digits.
+  scalar.mutable_scalar()->set_value(1000001);
+  stream.str("");
+  stream << scalar;
+  EXPECT_EQ("cpus(*):1000001", stream.str());
+
+  // Even larger value with precision in the fractional part limited
+  // to 3 digits but full precision in the integral part preserved.
+  scalar.mutable_scalar()->set_value(99999999999.9994);
+  stream.str("");
+  stream << scalar;
+  EXPECT_EQ("cpus(*):99999999999.999", stream.str());
 }
 
 
@@ -1454,9 +1498,9 @@ TEST(ResourcesTest, Reservations)
   Resources unreserved = Resources::parse(
       "cpus:1;mem:2;disk:4").get();
   Resources role1 = Resources::parse(
-      "cpus(role1):2;mem(role1):4;disk(role1):8;").get();
+      "cpus(role1):2;mem(role1):4;disk(role1):8").get();
   Resources role2 = Resources::parse(
-      "cpus(role2):4;mem(role2):8;disk(role2):6;").get();
+      "cpus(role2):4;mem(role2):8;disk(role2):6").get();
 
   Resources resources = unreserved + role1 + role2;
 
@@ -1688,7 +1732,7 @@ TEST(ReservedResourcesTest, Equals)
   Labels labels2;
   labels2.add_labels()->CopyFrom(createLabel("foo", "baz"));
 
-  std::vector<Resources> unique = {
+  vector<Resources> unique = {
     // Unreserved.
     createReservedResource(
         "cpus", "8", "*", None()),
@@ -2149,7 +2193,7 @@ TEST(ResourcesOperationTest, ReserveResources)
   Resources unreserved = unreservedCpus + unreservedMem;
 
   Resources reservedCpus1 =
-    unreservedCpus.flatten("role", createReservationInfo("principal"));
+    unreservedCpus.flatten("role", createReservationInfo("principal")).get();
 
   EXPECT_SOME_EQ(unreservedMem + reservedCpus1,
                  unreserved.apply(RESERVE(reservedCpus1)));
@@ -2237,7 +2281,7 @@ TEST(ResourcesOperationTest, StrippedResourcesReserved)
 {
   Resources unreserved = Resources::parse("cpus:1;mem:512").get();
   Resources dynamicallyReserved = unreserved.flatten(
-      "role", createReservationInfo("principal"));
+      "role", createReservationInfo("principal")).get();
 
   Resources stripped = dynamicallyReserved.createStrippedScalarQuantity();
 
@@ -2288,6 +2332,59 @@ TEST(ResourcesOperationTest, CreatePersistentVolumeFromMount)
   create2.mutable_create()->add_volumes()->CopyFrom(volume2);
 
   EXPECT_ERROR(total.apply(create2));
+}
+
+
+TEST(ResourcesOperationTest, CreateSharedPersistentVolume)
+{
+  Resources total = Resources::parse("cpus:1;mem:512;disk(role):1000").get();
+
+  Resource volume1 = createDiskResource(
+      "200", "role", "1", "path", None(), true);
+
+  Offer::Operation create1;
+  create1.set_type(Offer::Operation::CREATE);
+  create1.mutable_create()->add_volumes()->CopyFrom(volume1);
+
+  EXPECT_SOME_EQ(
+      Resources::parse("cpus:1;mem:512;disk(role):800").get() + volume1,
+      total.apply(create1));
+
+  // Apply a pair of CREATE and DESTROY of the same volume the result
+  // should be the original `total`.
+  Offer::Operation destroy1;
+  destroy1.set_type(Offer::Operation::DESTROY);
+  destroy1.mutable_destroy()->add_volumes()->CopyFrom(volume1);
+
+  EXPECT_SOME_EQ(total, total.apply(create1).get().apply(destroy1));
+
+  // Check the case of insufficient disk resources.
+  Resource volume2 = createDiskResource(
+      "2000", "role", "1", "path", None(), true);
+
+  Offer::Operation create2;
+  create2.set_type(Offer::Operation::CREATE);
+  create2.mutable_create()->add_volumes()->CopyFrom(volume2);
+
+  EXPECT_ERROR(total.apply(create2));
+}
+
+
+TEST(ResourcesOperationTest, FlattenResources)
+{
+  Resources unreservedCpus = Resources::parse("cpus:1").get();
+  Resources unreservedMem = Resources::parse("mem:512").get();
+
+  Resources unreserved = unreservedCpus + unreservedMem;
+
+  EXPECT_ERROR(unreserved.flatten("*", createReservationInfo("principal")));
+  EXPECT_ERROR(unreserved.flatten("-role"));
+
+  Resources reservedCpus =
+    unreservedCpus.flatten("role", createReservationInfo("principal")).get();
+
+  EXPECT_SOME_EQ(unreservedMem + reservedCpus,
+                 unreserved.apply(RESERVE(reservedCpus)));
 }
 
 
@@ -2403,6 +2500,700 @@ TEST(RevocableResourceTest, Filter)
 
   EXPECT_EQ(r1, (r1 + r2).revocable());
   EXPECT_EQ(r2, (r1 + r2).nonRevocable());
+}
+
+
+TEST(ResourcesTest, Count)
+{
+  // The summation of identical shared resources is valid and
+  // the result is reflected in the count.
+  Resource sharedDisk = createDiskResource(
+      "100", "role1", "1", "path1", None(), true);
+  EXPECT_EQ(1u, (Resources(sharedDisk)).count(sharedDisk));
+  EXPECT_EQ(2u, (Resources(sharedDisk) + sharedDisk).count(sharedDisk));
+
+  // The summation is invalid and a no-op for non-shared disks so the
+  // count remains 1.
+  Resource nonSharedDisk = createDiskResource("100", "role1", "1", "path1");
+  EXPECT_EQ(1u, (Resources(nonSharedDisk)).count(nonSharedDisk));
+  EXPECT_EQ(
+      1u, (Resources(nonSharedDisk) + nonSharedDisk).count(nonSharedDisk));
+
+  // After the summation the scalar changes so the count is 0.
+  Resource cpus = Resources::parse("cpus", "1", "*").get();
+  EXPECT_EQ(1u, Resources(cpus).count(cpus));
+  EXPECT_EQ(0u, (Resources(cpus) + cpus).count(cpus));
+}
+
+
+TEST(ResourcesTest, Evolve)
+{
+  string resourcesString = "cpus(role1):2;mem(role1):10;cpus:4;mem:20";
+  Resources resources = Resources::parse(resourcesString).get();
+
+  v1::Resources evolved = evolve(resources);
+
+  EXPECT_EQ(v1::Resources::parse(resourcesString).get(), evolved);
+}
+
+
+TEST(SharedResourcesTest, Printing)
+{
+  Resources volume = createPersistentVolume(
+      Megabytes(64),
+      "role1",
+      "id1",
+      "path1",
+      None(),
+      None(),
+      "principal1",
+      true); // Shared.
+
+  {
+    ostringstream oss;
+
+    oss << volume;
+    EXPECT_EQ("disk(role1)[id1:path1]<SHARED>:64<1>", oss.str());
+  }
+
+  {
+    ostringstream oss;
+
+    oss << volume + volume;
+    EXPECT_EQ("disk(role1)[id1:path1]<SHARED>:64<2>", oss.str());
+  }
+}
+
+
+TEST(SharedResourcesTest, ScalarAdditionShared)
+{
+  // Shared persistent volume.
+  Resource disk = createDiskResource(
+      "50", "role1", "1", "path", None(), true);
+
+  Resources r1;
+  r1 += Resources::parse("cpus", "1", "*").get();
+  r1 += Resources::parse("mem", "5", "*").get();
+  r1 += disk;
+
+  EXPECT_EQ(1u, r1.count(disk));
+
+  Resources r2 = Resources::parse("cpus:2;mem:10").get() + disk;
+
+  EXPECT_EQ(1u, r2.count(disk));
+
+  // Verify addition (operator+) on Resources.
+  Resources sum = r1 + r2;
+
+  EXPECT_FALSE(sum.empty());
+  EXPECT_EQ(3u, sum.size());
+  EXPECT_EQ(3, sum.get<Value::Scalar>("cpus").get().value());
+  EXPECT_EQ(15, sum.get<Value::Scalar>("mem").get().value());
+  EXPECT_EQ(50, sum.get<Value::Scalar>("disk").get().value());
+  EXPECT_EQ(2u, sum.count(disk));
+
+  // Verify operator+= on Resources is the same as operator+.
+  Resources r = r1;
+  r += r2;
+  EXPECT_EQ(r, sum);
+}
+
+
+TEST(SharedResourcesTest, ScalarSubtractionShared)
+{
+  // Shared persistent volume.
+  Resource disk = createDiskResource(
+      "8192", "role1", "1", "path", None(), true);
+
+  Resources r1 = Resources::parse("cpus:40;mem:4096").get() + disk + disk;
+  Resources r2 = Resources::parse("cpus:5;mem:512").get() + disk;
+
+  // Verify subtraction (operator-) on Resources.
+  Resources diff = r1 - r2;
+
+  EXPECT_FALSE(diff.empty());
+  EXPECT_EQ(3u, diff.size());
+  EXPECT_EQ(35, diff.get<Value::Scalar>("cpus").get().value());
+  EXPECT_EQ(3584, diff.get<Value::Scalar>("mem").get().value());
+  EXPECT_EQ(8192, diff.get<Value::Scalar>("disk").get().value());
+  EXPECT_EQ(1u, diff.count(disk));
+  EXPECT_TRUE(diff.contains(disk));
+
+  // Verify operator-= on Resources is the same as operator-.
+  Resources r = r1;
+  r -= r2;
+  EXPECT_EQ(diff, r);
+
+  // Verify that when all copies of shared resource is removed, that specific
+  // shared resource is no longer contained in the Resources object.
+  EXPECT_EQ(2u, r1.count(disk));
+  EXPECT_TRUE(r1.contains(disk));
+  EXPECT_EQ(1u, r2.count(disk));
+  EXPECT_TRUE(r2.contains(disk));
+
+  EXPECT_EQ(0u, (r1 - r2 - r2).count(disk));
+  EXPECT_FALSE((r1 - r2 - r2).contains(disk));
+  EXPECT_EQ(0u, (r2 - r1).count(disk));
+  EXPECT_FALSE((r2 - r1).contains(disk));
+}
+
+
+TEST(SharedResourcesTest, ScalarSharedCompoundExpressions)
+{
+  // Shared persistent volume.
+  Resource disk = createDiskResource(
+      "50", "role1", "1", "path", None(), true);
+
+  Resources r1 = Resources::parse("cpus:2;mem:10").get() +
+    disk + disk + disk + disk;
+  Resources r2 = Resources::parse("cpus:2;mem:10").get() + disk + disk + disk;
+
+  EXPECT_EQ(4u, r1.count(disk));
+  EXPECT_EQ(3u, r2.count(disk));
+
+  // Verify multiple arithmetic operations on shared resources.
+  EXPECT_EQ(r1 + r1 - r1, r1);
+  EXPECT_EQ(r1 + r2 - r1, r2);
+  EXPECT_EQ(r2 + r1 - r2, r1);
+  EXPECT_EQ(r2 + r1 - r1, r2);
+  EXPECT_EQ(r2 - r1 + r1, r1);
+  EXPECT_EQ(r1 - r2 + r2, r1);
+
+  // Verify subtraction of Resources when only shared counts vary.
+  EXPECT_TRUE((r2 - r1).empty());
+  EXPECT_FALSE((r1 - r2).empty());
+}
+
+
+// Verify shared counts on addition and subtraction of shared
+// resources which differ in their scalar values.
+TEST(SharedResourcesTest, ScalarNonEqualSharedOperations)
+{
+  // Shared persistent volumes.
+  Resource disk1 = createDiskResource(
+      "50", "role1", "1", "path1", None(), true);
+  Resource disk2 = createDiskResource(
+      "100", "role1", "2", "path2", None(), true);
+
+  Resources r1 = Resources(disk1) + disk2;
+
+  EXPECT_EQ(1u, r1.count(disk1));
+  EXPECT_EQ(1u, r1.count(disk2));
+
+  Resources r2 = Resources(disk1) + disk2 - disk1;
+
+  EXPECT_EQ(0u, r2.count(disk1));
+  EXPECT_EQ(1u, r2.count(disk2));
+
+  // Cannot subtract nonequal shared resources.
+  Resources r3 = Resources(disk1) - disk2;
+
+  EXPECT_EQ(1u, r3.count(disk1));
+  EXPECT_EQ(0u, r3.count(disk2));
+}
+
+
+// Verify addition and subtraction of similar resources which differ in
+// their sharedness only.
+TEST(SharedResourcesTest, ScalarSharedAndNonSharedOperations)
+{
+  Resource sharedDisk = createDiskResource(
+      "100", "role1", "1", "path", None(), true);
+
+  Resource nonSharedDisk = createDiskResource("100", "role1", "1", "path");
+
+  Resources r1 = Resources::parse("cpus:1;mem:5").get() + sharedDisk;
+  Resources r2 = Resources::parse("cpus:1;mem:5").get() + nonSharedDisk;
+
+  // r1 and r2 don't contain each other because of sharedDisk and
+  // nonSharedDisk's different sharedness.
+  EXPECT_FALSE(r2.contains(r1));
+  EXPECT_FALSE(r1.contains(r2));
+
+  // Additions of resources with non-matching sharedness.
+  Resources r3 = sharedDisk;
+  r3 += sharedDisk;
+  r3 += nonSharedDisk;
+
+  EXPECT_FALSE(r3.empty());
+  EXPECT_EQ(2u, r3.size());
+  EXPECT_EQ(200, r3.get<Value::Scalar>("disk").get().value());
+  EXPECT_EQ(2u, r3.count(sharedDisk));
+  EXPECT_EQ(1u, r3.count(nonSharedDisk));
+
+  // Cannot subtract resources with non-matching sharedness.
+  Resources r4 = nonSharedDisk;
+  r4 -= sharedDisk;
+
+  EXPECT_EQ(r4, nonSharedDisk);
+}
+
+
+// This test verifies that shared resources can be filtered.
+TEST(SharedResourcesTest, Filter)
+{
+  Resources r1 = createDiskResource("10", "role1", "1", "path", None(), true);
+  EXPECT_EQ(r1, r1.shared());
+  EXPECT_TRUE(r1.nonShared().empty());
+
+  Resources r2 = createDiskResource(
+      "20", "role2", None(), None(), None(), false);
+
+  EXPECT_TRUE(r2.shared().empty());
+  EXPECT_EQ(r2, r2.nonShared());
+
+  EXPECT_EQ(r1, (r1 + r2).shared());
+  EXPECT_EQ(r2, (r1 + r2).nonShared());
+
+  Resources resources = Resources::parse("cpus:1;mem:512;disk:1000").get();
+  Resources sum = resources + r1 + r2;
+
+  EXPECT_EQ(r1, sum.shared());
+  EXPECT_EQ(resources + r2, sum.nonShared());
+}
+
+
+// Helper for creating an allocated resource, indicating resource
+// that has been allocated to a framework.
+//
+// TODO(bmahler): Inroduce `Resources::allocate` to remove this helper.
+static Resource createAllocatedResource(
+    const string& name,
+    const string& value,
+    const string& role)
+{
+  Resource resource = Resources::parse(name, value, role).get();
+  resource.mutable_allocation_info()->set_role(role);
+  return resource;
+}
+
+
+TEST(AllocatedResourcesTest, Equality)
+{
+  Resources cpus1 = createAllocatedResource("cpus", "1", "*");
+  Resources cpus2 = createAllocatedResource("cpus", "1", "role1");
+
+  EXPECT_EQ(cpus1, cpus1);
+  EXPECT_NE(cpus1, cpus2);
+}
+
+
+TEST(AllocatedResourcesTest, Contains)
+{
+  Resources cpus1 = createAllocatedResource("cpus", "1", "*");
+  Resources cpus2 = createAllocatedResource("cpus", "1", "role1");
+
+  EXPECT_TRUE((cpus1 + cpus2).contains(cpus1));
+  EXPECT_TRUE((cpus1 + cpus2).contains(cpus2));
+}
+
+
+TEST(AllocatedResourcesTest, Addition)
+{
+  Resources cpus1 = createAllocatedResource("cpus", "1", "*");
+  Resources cpus2 = createAllocatedResource("cpus", "1", "role1");
+
+  EXPECT_EQ(2u, (cpus1 + cpus2).size());
+  EXPECT_SOME_EQ(2.0, (cpus1 + cpus2).cpus());
+}
+
+
+TEST(AllocatedResourcesTest, Subtraction)
+{
+  Resources cpus1 = createAllocatedResource("cpus", "1", "*");
+  Resources cpus2 = createAllocatedResource("cpus", "1", "role1");
+
+  EXPECT_TRUE((cpus1 - cpus1).empty());
+  EXPECT_TRUE((cpus2 - cpus2).empty());
+
+  EXPECT_EQ(cpus1, cpus1 - cpus2);
+  EXPECT_EQ(cpus2, cpus2 - cpus1);
+}
+
+
+TEST(AllocatedResourcesTest, Allocations)
+{
+  Resources cpus1 = createAllocatedResource("cpus", "1", "*");
+  Resources cpus2 = createAllocatedResource("cpus", "2", "role2");
+  Resources cpus3 = createAllocatedResource("cpus", "3", "role3");
+
+  Resources mem1 = createAllocatedResource("mem", "1024", "*");
+  Resources mem2 = createAllocatedResource("mem", "2048", "role2");
+  Resources mem3 = createAllocatedResource("mem", "3096", "role3");
+
+  Resources resources = cpus1 + cpus2 + cpus3 + mem1 + mem2 + mem3;
+
+  hashmap<string, Resources> allocations = resources.allocations();
+
+  EXPECT_EQ(3u, allocations.size());
+  EXPECT_EQ(cpus1 + mem1, allocations["*"]);
+  EXPECT_EQ(cpus2 + mem2, allocations["role2"]);
+  EXPECT_EQ(cpus3 + mem3, allocations["role3"]);
+}
+
+
+struct ScalarArithmeticParameter
+{
+  Resources resources;
+  size_t totalOperations;
+};
+
+
+class Resources_Scalar_Arithmetic_BENCHMARK_Test
+  : public ::testing::Test,
+    public ::testing::WithParamInterface<ScalarArithmeticParameter>
+{
+public:
+  // Returns the 'Resources' parameters to run the benchmarks against.
+  static vector<ScalarArithmeticParameter> parameters()
+  {
+    vector<ScalarArithmeticParameter> parameters_;
+
+    // Test a typical vector of scalars.
+    ScalarArithmeticParameter scalars;
+    scalars.resources =
+      Resources::parse("cpus:1;gpus:1;mem:128;disk:256").get();
+    scalars.totalOperations = 50000;
+
+    // Note that the benchmark incorrectly sums together
+    // identity-based resources, because the allocator
+    // incorrectly sums resources across slaves. In
+    // particular, for identity based resources like sets
+    // and range, this means that a+a = a rather than 2a.
+    //
+    // TODO(bmahler): As we introduce a notion of a
+    // ResourceQuantity, we can disallow summation
+    // of identical resources and update this benchmark
+    // accordingly.
+
+    // Test a large amount of unique reservations. This can
+    // occur when aggregating across agents in a cluster.
+    ScalarArithmeticParameter reservations;
+    for (int i = 0; i < 1000; ++i) {
+      Label label;
+      label.set_key("key_" + stringify(i));
+      label.set_value("value_" + stringify(i));
+
+      Resource::ReservationInfo reservation;
+      reservation.set_principal("principal_" + stringify(i));
+      reservation.mutable_labels()->add_labels()->CopyFrom(label);
+
+      reservations.resources +=
+        scalars.resources.flatten(stringify(i), reservation).get();
+    }
+    reservations.totalOperations = 10;
+
+    // Test the performance of ranges using a fragmented range of
+    // ports: [1-2,4-5,7-8,...,1000]. Note that the benchmark will
+    // continuously sum together the same port range, which does
+    // not preserve arithmetic invariants (a+a-a != a).
+    string ports;
+    for (int portBegin = 1; portBegin < 1000-1; portBegin = portBegin + 3) {
+      if (!ports.empty()) {
+        ports += ",";
+      }
+      ports += stringify(portBegin) + "-" + stringify(portBegin+1);
+    }
+
+    // TODO(gyliu513): Move the ports resources benchmark test
+    // to a separate test class.
+    ScalarArithmeticParameter ranges;
+    ranges.resources = Resources::parse("ports:[" + ports + "]").get();
+    ranges.totalOperations = 1000;
+
+    // Test a typical vector of scalars which include shared resources
+    // (viz, shared persistent volumes).
+    Resource disk = createDiskResource(
+        "256", "test", "persistentId", "/volume", None(), true);
+
+    ScalarArithmeticParameter shared;
+    shared.resources = Resources::parse("cpus:1;mem:128").get() + disk;
+    shared.totalOperations = 50000;
+
+    parameters_.push_back(std::move(scalars));
+    parameters_.push_back(std::move(reservations));
+    parameters_.push_back(std::move(ranges));
+    parameters_.push_back(std::move(shared));
+
+    return parameters_;
+  }
+};
+
+
+// The Resources benchmark tests are parameterized by the
+// 'Resources' object to apply operations to, and the number
+// of times to run the operation.
+INSTANTIATE_TEST_CASE_P(
+    ResourcesScalarArithmeticOperators,
+    Resources_Scalar_Arithmetic_BENCHMARK_Test,
+    ::testing::ValuesIn(
+        Resources_Scalar_Arithmetic_BENCHMARK_Test::parameters()));
+
+
+static string abbreviate(string s, size_t max)
+{
+  string ellipses = "...";
+
+  if (s.size() > max) {
+    return s.substr(0, max-ellipses.size()) + "...";
+  } else {
+    return s;
+  }
+}
+
+
+TEST_P(Resources_Scalar_Arithmetic_BENCHMARK_Test, Arithmetic)
+{
+  const Resources& resources = GetParam().resources;
+  size_t totalOperations = GetParam().totalOperations;
+
+  Resources total;
+  Stopwatch watch;
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    total += resources;
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'total += r' operations"
+       << " on " << abbreviate(stringify(resources), 50) << endl;
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    total -= resources;
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'total -= r' operations"
+       << " on " << abbreviate(stringify(resources), 50) << endl;
+
+  ASSERT_TRUE(total.empty()) << total;
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    total = total + resources;
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'total = total + r' operations"
+       << " on " << abbreviate(stringify(resources), 50) << endl;
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    total = total - resources;
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'total = total - r' operations"
+       << " on " << abbreviate(stringify(resources), 50) << endl;
+
+  ASSERT_TRUE(total.empty()) << total;
+}
+
+
+class Resources_Filter_BENCHMARK_Test : public ::testing::Test {};
+
+
+TEST_F(Resources_Filter_BENCHMARK_Test, Filters)
+{
+  size_t totalOperations = 50000u;
+
+  Resources nonRevocable =
+    Resources::parse("cpus:1;gpus:1;mem:128;disk:256").get();
+
+  Stopwatch watch;
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    nonRevocable.nonRevocable();
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'r.nonRevocable()' operations"
+       << " on " << stringify(nonRevocable) << endl;
+
+  Resources revocable = createRevocableResource("cpus", "1", "*", true);
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    revocable.revocable();
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'r.revocable()' operations"
+       << " on " << stringify(revocable) << endl;
+
+  Resources unReserved = nonRevocable;
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    unReserved.unreserved();
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'r.unreserved()' operations"
+       << " on " << stringify(unReserved) << endl;
+
+  Resources reserved = Resources::parse(
+    "cpus(role):1;gpus(role):1;mem(role):128;disk(role):256").get();
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    reserved.reserved("role");
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations << " 'r.reserved(role)' operations"
+       << " on " << stringify(reserved) << endl;
+}
+
+
+struct ContainsParameter
+{
+  Resources subset;
+  Resources superset;
+  size_t totalOperations;
+};
+
+
+class Resources_Contains_BENCHMARK_Test
+  : public ::testing::Test,
+    public ::testing::WithParamInterface<ContainsParameter>
+{
+public:
+  // Returns the 'Resources' parameters to run the `contains`
+  // benchmarks against. This test will include three kind of
+  // 'Resources' parameters: scalar, ranges and mixed
+  // (scalar and ranges).
+  static vector<ContainsParameter> parameters()
+  {
+    vector<ContainsParameter> parameters_;
+
+    // Test a typical vector of scalars, the superset contains
+    // the subset for this case.
+    ContainsParameter scalars1;
+    scalars1.subset = Resources::parse("cpus:1;mem:128").get();
+    scalars1.superset =
+      Resources::parse("cpus:1;gpus:1;mem:128;disk:256").get();
+
+    scalars1.totalOperations = 5000;
+
+    // Test a typical vector of scalars, the superset does not
+    // contains the subset for this case.
+    ContainsParameter scalars2;
+    scalars2.subset = scalars1.superset;
+    scalars2.superset = scalars1.subset;
+    scalars2.totalOperations = 5000;
+
+    // Test a typical vector of scalars, the superset is same
+    // as the subset for this case.
+    ContainsParameter scalars3;
+    scalars3.subset = scalars1.subset;
+    scalars3.superset = scalars1.subset;
+    scalars3.totalOperations = 5000;
+
+    // TODO(bmahler): Increase the port rangae to [1-64,000] once
+    // performance is improved such that this doesn't take a
+    // long time to run.
+
+    // Create a fragmented range for ports resources.
+    Try<::mesos::Value::Ranges> range_ =
+      fragment(createRange(1, 16000), 16000/2);
+
+    // Test a typical vector of a fragment range of ports, the superset
+    // contains the subset for this case.
+    ContainsParameter range1;
+    range1.subset = createPorts(range_.get());
+    range1.superset = Resources::parse("ports", "[1-16000]", "*").get();
+    range1.totalOperations = 100;
+
+    // Test a typical vector of a fragment range of ports, the superset
+    // does not contain the subset for this case.
+    ContainsParameter range2;
+    range2.subset = range1.superset;
+    range2.superset = range1.subset;
+    range2.totalOperations = 50;
+
+    // Test a typical vector of a fragment range of ports, the superset
+    // is same as the subset for this case.
+    ContainsParameter range3;
+    range3.subset = range1.subset;
+    range3.superset = range1.subset;
+    range3.totalOperations = 1;
+
+    // Test mixed resources including both scalar and ports resources,
+    // the superset contains the subset for this case.
+    ContainsParameter mixed1;
+    mixed1.subset = scalars1.subset + range1.subset;
+    mixed1.superset = scalars1.superset + range1.superset;
+    mixed1.totalOperations = 100;
+
+    // Test mixed resources including both scalar and ports resources,
+    // the superset contains the subset for this case.
+    ContainsParameter mixed2;
+    mixed2.subset = mixed1.superset;
+    mixed2.superset = mixed1.subset;
+    mixed2.totalOperations = 50;
+
+    // Test mixed resources including both scalar and ports resources,
+    // the superset is same as the subset for this case.
+    ContainsParameter mixed3;
+    mixed3.subset = mixed1.subset;
+    mixed3.superset = mixed1.subset;
+    mixed3.totalOperations = 1;
+
+    parameters_.push_back(std::move(scalars1));
+    parameters_.push_back(std::move(scalars2));
+    parameters_.push_back(std::move(scalars3));
+    parameters_.push_back(std::move(range1));
+    parameters_.push_back(std::move(range2));
+    parameters_.push_back(std::move(range3));
+    parameters_.push_back(std::move(mixed1));
+    parameters_.push_back(std::move(mixed2));
+    parameters_.push_back(std::move(mixed3));
+
+    return parameters_;
+  }
+};
+
+
+// The Resources `contains` benchmark tests are parameterized by
+// the 'Resources' object to apply operations to.
+INSTANTIATE_TEST_CASE_P(
+    ResourcesContains,
+    Resources_Contains_BENCHMARK_Test,
+    ::testing::ValuesIn(Resources_Contains_BENCHMARK_Test::parameters()));
+
+
+TEST_P(Resources_Contains_BENCHMARK_Test, Contains)
+{
+  const Resources& subset = GetParam().subset;
+  const Resources& superset = GetParam().superset;
+  size_t totalOperations = GetParam().totalOperations;
+
+  Stopwatch watch;
+
+  watch.start();
+  for (size_t i = 0; i < totalOperations; i++) {
+    superset.contains(subset);
+  }
+  watch.stop();
+
+  cout << "Took " << watch.elapsed()
+       << " to perform " << totalOperations
+       << " 'superset.contains(subset)' operations on superset resources "
+       << abbreviate(stringify(superset), 50)
+       << " contains subset resources " << abbreviate(stringify(subset), 50)
+       << endl;
 }
 
 } // namespace tests {

@@ -16,6 +16,7 @@ nobase_include_HEADERS =			\
   stout/adaptor.hpp				\
   stout/attributes.hpp				\
   stout/base64.hpp				\
+  stout/boundedhashmap.hpp			\
   stout/bits.hpp				\
   stout/bytes.hpp				\
   stout/cache.hpp				\
@@ -64,10 +65,10 @@ nobase_include_HEADERS =			\
   stout/os/chroot.hpp				\
   stout/os/close.hpp				\
   stout/os/constants.hpp			\
-  stout/os/direntsize.hpp			\
   stout/os/environment.hpp			\
   stout/os/exists.hpp				\
   stout/os/fcntl.hpp				\
+  stout/os/getenv.hpp				\
   stout/os/find.hpp				\
   stout/os/fork.hpp				\
   stout/os/freebsd.hpp				\
@@ -84,7 +85,7 @@ nobase_include_HEADERS =			\
   stout/os/open.hpp				\
   stout/os/os.hpp				\
   stout/os/osx.hpp				\
-  stout/os/pagesize.hpp			\
+  stout/os/pagesize.hpp				\
   stout/os/permissions.hpp			\
   stout/os/process.hpp				\
   stout/os/pstree.hpp				\
@@ -101,19 +102,22 @@ nobase_include_HEADERS =			\
   stout/os/strerror.hpp				\
   stout/os/su.hpp				\
   stout/os/sysctl.hpp				\
+  stout/os/temp.hpp				\
   stout/os/touch.hpp				\
   stout/os/utime.hpp				\
+  stout/os/wait.hpp				\
   stout/os/write.hpp				\
+  stout/os/xattr.hpp				\
   stout/os/posix/bootid.hpp			\
   stout/os/posix/chown.hpp			\
   stout/os/posix/chroot.hpp			\
   stout/os/posix/close.hpp			\
-  stout/os/posix/direntsize.hpp			\
   stout/os/posix/exists.hpp			\
   stout/os/posix/fcntl.hpp			\
   stout/os/posix/fork.hpp			\
   stout/os/posix/fsync.hpp			\
   stout/os/posix/ftruncate.hpp			\
+  stout/os/posix/getenv.hpp			\
   stout/os/posix/kill.hpp			\
   stout/os/posix/killtree.hpp			\
   stout/os/posix/mkdtemp.hpp			\
@@ -128,21 +132,24 @@ nobase_include_HEADERS =			\
   stout/os/posix/socket.hpp			\
   stout/os/posix/stat.hpp			\
   stout/os/posix/su.hpp				\
+  stout/os/posix/temp.hpp			\
   stout/os/posix/write.hpp			\
+  stout/os/posix/xattr.hpp			\
+  stout/os/raw/argv.hpp				\
   stout/os/raw/environment.hpp			\
   stout/os/windows/bootid.hpp			\
   stout/os/windows/chroot.hpp			\
   stout/os/windows/close.hpp			\
-  stout/os/windows/direntsize.hpp		\
   stout/os/windows/exists.hpp			\
   stout/os/windows/fcntl.hpp			\
   stout/os/windows/fork.hpp			\
   stout/os/windows/fsync.hpp			\
   stout/os/windows/ftruncate.hpp		\
+  stout/os/windows/getenv.hpp			\
   stout/os/windows/kill.hpp			\
   stout/os/windows/killtree.hpp			\
   stout/os/windows/mkdtemp.hpp			\
-  stout/os/windows/pagesize.hpp		\
+  stout/os/windows/pagesize.hpp			\
   stout/os/windows/read.hpp			\
   stout/os/windows/rename.hpp			\
   stout/os/windows/rm.hpp			\
@@ -153,7 +160,9 @@ nobase_include_HEADERS =			\
   stout/os/windows/socket.hpp			\
   stout/os/windows/stat.hpp			\
   stout/os/windows/su.hpp			\
+  stout/os/windows/temp.hpp			\
   stout/os/windows/write.hpp			\
+  stout/os/windows/xattr.hpp			\
   stout/path.hpp				\
   stout/preprocessor.hpp			\
   stout/proc.hpp				\
